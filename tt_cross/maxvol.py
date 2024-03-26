@@ -4,8 +4,35 @@ from scipy.linalg import get_blas_funcs, get_lapack_funcs
 
 
 @nb.jit(nopython=True)
-def maxvol(A: np.ndarray, complex: bool, tol: float, max_iter: int) -> list[int]:
+def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
+    """Maxvol algorithm, which finds the subset of rows of a matrix A which form a submatrix with the largest volume.
+    Given a matrix A of shape (n, r) with n > r, the algorithm returns a list of r indices of rows of A. It uses a
+    sequential procedure that swaps rows to maximize the volume. The reference paper can be found in:
+    https://www.researchgate.net/publication/251735015_How_to_Find_a_Good_Sub
 
+    The algorithm follows the steps below:
+    - The input matrix will be renamed to B, which will be a copy of A, transposed if n < r.
+    - The maximal submatrix will be C, which initially will be asumed to lie in the first r rows of B.
+                                  | I |
+    - We know that B * C^-1 = D = |   | , where I is an identity of shape (r, r).
+                                  | Z |
+    - We will solve the system C^T * X = B^T, where X = D^T. This will give us the matrix D.
+    - And with D, we can just find max(D[i, j]), add the swap i<->j to the list of indices, and update D with the
+    procedure described in the paper, with an update to just the Z part of D.
+
+    Args:
+        A (np.ndarray): The input matrix of shape (n, r). If n < r, the algorithm will transpose the matrix.
+        tol (float): The tolerance 1+delta that the algorithm will use to check for convergence.
+        max_iter (int): A maximum number of iterations that the algorithm will perform.
+
+    Raises:
+        ValueError: If the input matrix A is not a 2D matrix.
+
+    Returns:
+        list[int]: A list of r indices of rows of A that form a submatrix with the largest volume.
+    """
+
+    # Initial checks about the input matrix
     if len(A.shape) != 2:
         raise ValueError("A must be a matrix")
 
@@ -16,8 +43,10 @@ def maxvol(A: np.ndarray, complex: bool, tol: float, max_iter: int) -> list[int]
     else:
         B = A.copy()
 
+    # Initialize the maximum volume submatrix
     C = B[:r, :]
 
+    # Solve the system C^T * X = B^T
     D_T = np.linalg.solve(C.T, B.T)
     D = D_T.T
 
@@ -25,11 +54,15 @@ def maxvol(A: np.ndarray, complex: bool, tol: float, max_iter: int) -> list[int]
 
     iter = 1
 
+    # FInd the first swap
     i, j = divmod(np.argmax(np.abs(D)), r)
 
     while np.abs(D[i, j]) > tol and iter < max_iter:
+
+        # Add the swap to the index list
         index[j] = i
 
+        # Update the bottom part of the matrix D accordingly and repeat
         tmp_row = D[i].copy()
         tmp_column = D[:, j].copy()
         tmp_column[i] -= 1.0
