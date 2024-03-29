@@ -1,3 +1,4 @@
+from ast import Index
 import numpy as np
 import numba as nb
 from scipy.linalg import get_blas_funcs, get_lapack_funcs
@@ -135,3 +136,50 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         iters += 1
         i, j = divmod(abs(C[:, :top_k_index]).argmax(), top_k_index)
     return index[:r].copy(), C.T
+
+
+def greedy_pivot_finder(A: np.ndarray, Approx: np.ndarray, I: np.ndarray, J: np.ndarray, max_iters=100) -> tuple[int]:
+    """Greedy pivot finder algorithm, which given a matrix A and the current cross aproximations obtained from rows I
+    and columns J, finds a new pivot (i_new, j_new) that maximizes the difference between A and Approx.
+
+    Args:
+        A (np.ndarray): The input matrix of shape (n, r) which we want to approximate.
+        TODO Approx could be generated inside the function from A, I and J.
+        Approx (np.ndarray): The cross approximation of A, which we want to improve.
+        I (np.ndarray): The current best rows of A that form the cross approximation.
+        J (np.ndarray): The current best columns of A that form the cross approximation.
+        max_iters (int, optional): The maximum number of updates to the new indices. Defaults to 100.
+
+    Raises:
+        ValueError: If A and Approx do not have the same shape.
+        ValueError: If I and J are not 1D arrays.
+        IndexError: If I or J contain indices that are out of bounds of the input matrix.
+
+    Returns:
+        tuple[int]: The new indices (i_new, j_new) that improve the approximation.
+    """
+    if A.shape != Approx.shape:
+        raise ValueError("A and Approx must be 2D matrices of equal shape.")
+    if len(I.shape) != len(J.shape) != 1:
+        raise ValueError("I and J must be 1D arrays")
+    if any(I > n) or any(J > r):
+        raise IndexError("I and J must be within the bounds of the input matrix")
+
+    n, r = A.shape
+
+    i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), r)
+
+    for _ in max_iters:
+        i_new = np.argmax(np.abs(A[:, j_new] - Approx[:, j_new]))
+        j_new = np.argmax(np.abs(A[i_new] - Approx[i_new]))
+
+        rook = False
+        if np.argmax(np.abs(A[:, j_new] - Approx[:, j_new])) <= np.argmax(
+            np.abs(A[i_new, j_new] - Approx[i_new, j_new])
+        ) and np.argmax(np.abs(A[i_new] - Approx[i_new])) <= np.argmax(np.abs(A[i_new, j_new] - Approx[i_new, j_new])):
+            rook = True
+
+        if rook:
+            return i_new, j_new
+
+    return i_new, j_new
