@@ -1,10 +1,10 @@
 from ast import Index
 import numpy as np
 import numba as nb
-from scipy.linalg import get_blas_funcs, get_lapack_funcs
+from scipy.linalg import get_blas_funcs, get_lapack_funcs, lu
 
 
-@nb.jit(nopython=True)
+# @nb.jit(nopython=True)
 def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
     """Maxvol algorithm, which finds the subset of rows of a matrix A which form a submatrix with the largest volume.
     Given a matrix A of shape (n, r) with n > r, the algorithm returns a list of r indices of rows of A. It uses a
@@ -44,14 +44,16 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
     else:
         B = A.copy()
 
-    # Initialize the maximum volume submatrix
-    C = B[:r, :]
+    # Maxvol works best if the initial pivots are somewhat good. On the paper they suggest using the
+    # row pivots from Gaussian elimination, which are very closely related to the LU decomposition ones.
+    p, l, u = lu(B)
+    H = l @ u
+    index = np.argmax(p, axis=1)
+
+    C = H[:r]
 
     # Solve the system C^T * X = B^T
-    D_T = np.linalg.solve(C.T, B.T)
-    D = D_T.T
-
-    index = np.arange(n)
+    D = np.linalg.solve(C.T, H.T).T
 
     iter = 1
 
@@ -75,7 +77,7 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
 
         iter += 1
 
-    return index[:r]
+    return index[:r].copy(), D
 
 
 def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
