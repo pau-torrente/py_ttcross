@@ -5,35 +5,85 @@ from .maxvol import maxvol
 
 
 class ttrc:
-    def __init__(self, func, num_variables, grid, tol, sweeps, initial_bond_guess):
+    def __init__(self, func, num_variables, grid, tol, sweeps, initial_bond_guess, is_f_complex=False):
         self.func = func
+        if len(grid.shape) != num_variables:
+            raise ValueError("The grid must have the same number of dimensions as the number of variables")
         self.num_variables = num_variables
         self.grid = grid
         self.tol = tol
         self.sweeps = sweeps
         self.max_bond = initial_bond_guess
+        self.bonds = np.ndarray(self.num_variables + 1, int)
+        self.bonds[0] = 1
+        self.bonds[-1] = 1
+        self.bonds[1:-1] = self.max_bond
+
+        self.f_type = complex if is_f_complex else np.float64
+
+    def _create_initial_index_sets(self):
+
+        # TODO Move the bond initialization to the _create_bond_dimensions method
+        # self.bonds[0] = 1
+        # self.bonds[-1] = 1
+
+        self.i = np.ndarray(self.num_variables, dtype=np.ndarray)
+        self.i[0] = self.grid[0][: min(self.grid.shape[0], self.max_bond)]
+
+        # TODO Deduce what happens with bonds when self.max_bond > len(self.grid[0])
+        for i in range(self.num_variables):
+            current_index = self.grid[i][: min(self.grid.shape[i], self.max_bond)]
+            self.i[i] = np.column_stack(self.i[i - 1][: len(current_index)], current_index)
+
+        self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
+        self.j[-1] = self.grid[-1][: min(self.grid.shape[-1], self.max_bond)]
+        for i in range(-2, -self.num_variables - 1, -1):
+            current_index = self.grid[i][: min(self.grid.shape[i], self.max_bond)]
+            self.i[i] = np.column_stack(current_index, self.i[i - 1][: len(current_index)])
+
+    # TODO Move the bond initialization here
+    def _create_bond_dimensions(self):
+        pass
+
+    # TODO Loops are probably not the best idea here, but we can optimize them later
+    def compute_single_site_tensor(self, site):
+        tensor = np.ndarray((self.bonds[site - 1], len(self.grid[site]), self.bonds[site]), dtype=self.f_type)
+
+        for left in self.i[site - 1]:
+            for right in self.j[site]:
+                for i in self.grid[site]:
+                    point = np.concatenate((left, i, right))
+                    tensor[left, i, right] = self.func(point)
+
+        return tensor
+
+    # TODO Loops are probably not the best idea here, but we can optimize them later
+    def compute_superblock_tensor(self, site):
+        tensor = np.ndarray(
+            (self.bonds[site - 1], len(self.grid[site]), len(self.grid[site + 1]), self.bonds[site + 1]),
+            dtype=self.f_type,
+        )
+        for left in self.i[site - 1]:
+            for right in self.j[site + 1]:
+                for i in self.grid[site]:
+                    for j in self.grid[site + 1]:
+                        point = np.concatenate((left, i, j, right))
+                        tensor[left, i, j, right] = self.func(point)
+
+        return tensor
 
     def _crate_initial_arrays(self):
-        # TODO For b we could select a bunch of random indices and compute it from func -> Better kickstart
-        # TODO Define how we want to intorduce the function, grid and number of variables into the initialization
-
-        self.b = np.ndarray(self.num_variables, dtype=np.ndarray)
-        self.b[0] = np.ones((1, len(self.grid[0]), self.max_bond))
-        self.b[-1] = np.ones((self.max_bond, len(self.grid[-1]), 1))
-        for i in range(1, self.num_variables - 1):
-            self.b[i] = np.ones((self.max_bond, len(self.grid[i]), self.max_bond))
-
         self.p = np.ndarray(self.num_variables + 1, dtype=np.ndarray)
-        self.p[0] = np.ones((1))
         self.p[-1] = np.ones((1))
         self.r = np.ones((1))
 
-        # Not really sure what the j and i arrays are supposed to be. They are the caligraphic J and I in the paper
+        self._create_bond_dimensions()
+        self._create_initial_index_sets()
 
-        self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
-        self.j[-1] = np.array([1])
-        self.i = np.ndarray(self.num_variables, dtype=np.ndarray)
-        self.j[0] = np.array([1])
+        self.b = np.ndarray(self.num_variables, dtype=np.ndarray)
+
+        for i in range(self.num_variables):
+            self.b[i] = self.compute_single_site_tensor(i)
 
     #   @nb.njit() -> Since we are not using ncon in this part, we can use numba
     def initial_sweep_step(self, pos: int):
@@ -53,17 +103,19 @@ class ttrc:
 
         # Does p maintain the (1,1) shape of the first and last elements?
         self.p[pos - 1] = q[:, j_k]
+
+        # TODO Obtain the index values from the column index j_k
         return j_k
 
     def initial_sweep(self):
-        # how do we interpret the nestedness in terms of the columns/rows instead of the indices used in the paper?
-
         for site in range(self.num_variables - 1, -1, -1):
             j_k = self.initial_sweep_step(site)
             if site == self.num_variables - 1:
                 self.j[site] = np.array([j_k])
             else:
-                self.j[site] = np.array([j_k, self.j[site + 1]])  # TODO: Check if this is the nestedness we need
+                self.j[site] = np.array(
+                    [j_k, self.j[site + 1]]
+                )  # TODO: UPDATE I AND J ARRAYS TO BE WHAT THEY ARE SUPPOSED TO BE
 
     def compute_superblock(self, k):
         # TODO Once the function structure is defined, we need to define how do we compute its values with indices reshaped

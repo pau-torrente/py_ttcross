@@ -1,11 +1,11 @@
 from ast import Index
 import numpy as np
 import numba as nb
-from scipy.linalg import get_blas_funcs, get_lapack_funcs, lu
+from scipy.linalg import get_blas_funcs, get_lapack_funcs, lu_factor
 
 
 # @nb.jit(nopython=True)
-def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
+def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndarray]:
     """Maxvol algorithm, which finds the subset of rows of a matrix A which form a submatrix with the largest volume.
     Given a matrix A of shape (n, r) with n > r, the algorithm returns a list of r indices of rows of A. It uses a
     sequential procedure that swaps rows to maximize the volume. The reference paper can be found in:
@@ -46,24 +46,39 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> list[int]:
 
     # Maxvol works best if the initial pivots are somewhat good. On the paper they suggest using the
     # row pivots from Gaussian elimination, which are very closely related to the LU decomposition ones.
-    p, l, u = lu(B)
-    H = l @ u
-    index = np.argmax(p, axis=1)
+    H, piv = lu_factor(B)
+    index = np.arange(n, dtype=np.int32)
+
+    for i in range(r):
+        tmp = index[i]
+        index[i] = index[piv[i]]
+        index[piv[i]] = tmp
+
+    print(index)
 
     C = H[:r]
 
-    # Solve the system C^T * X = B^T
-    D = np.linalg.solve(C.T, H.T).T
+    # Solve the system C^T * X = H^T
+    # D = np.linalg.solve(C.T, H.T).T
+
+    trtrs = get_lapack_funcs("trtrs", [C])
+    trtrs(C, B.T, trans=1, lower=0, unitdiag=0, overwrite_b=1)
+    trtrs(C, B.T, trans=1, lower=1, unitdiag=1, overwrite_b=1)
 
     iter = 1
 
     # FInd the first swap
+    D = B.T
+
     i, j = divmod(np.argmax(np.abs(D)), r)
 
-    while np.abs(D[i, j]) > tol and iter < max_iter:
+    print(D)
 
-        # Add the swap to the index list
-        index[j] = i
+    while np.abs(D[i, j]) > tol and iter < max_iter:
+        # Perform the swap on the index list
+        tmp = index[i]
+        index[i] = index[j]
+        index[j] = tmp
 
         # Update the bottom part of the matrix D accordingly and repeat
         tmp_row = D[i].copy()
@@ -109,6 +124,8 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         tmp = index[i]
         index[i] = index[ipiv[i]]
         index[ipiv[i]] = tmp
+
+    print(index)
     # solve A = CH, H is in LU format
     B = H[:r]
     # It will be much faster to use *TRSM instead of *TRTRS
@@ -127,6 +144,7 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     # set number of iters to 0
     iters = 0
     # check if need to swap rows
+    print(C.T)
     while abs(C[i, j]) > tol and iters < max_iters:
         # add j to index and recompute C by SVM-formula
         index[i] = j
@@ -175,13 +193,9 @@ def greedy_pivot_finder(A: np.ndarray, Approx: np.ndarray, I: np.ndarray, J: np.
         i_new = np.argmax(np.abs(A[:, j_new] - Approx[:, j_new]))
         j_new = np.argmax(np.abs(A[i_new] - Approx[i_new]))
 
-        rook = False
-        if np.argmax(np.abs(A[:, j_new] - Approx[:, j_new])) <= np.argmax(
-            np.abs(A[i_new, j_new] - Approx[i_new, j_new])
-        ) and np.argmax(np.abs(A[i_new] - Approx[i_new])) <= np.argmax(np.abs(A[i_new, j_new] - Approx[i_new, j_new])):
-            rook = True
-
-        if rook:
+        if np.argmax(np.abs(A[:, j_new] - Approx[:, j_new])) <= np.abs(A[i_new, j_new] - Approx[i_new, j_new]) and (
+            np.argmax(np.abs(A[i_new] - Approx[i_new])) <= np.argmax(np.abs(A[i_new, j_new] - Approx[i_new, j_new]))
+        ):
             return i_new, j_new
 
     return i_new, j_new
