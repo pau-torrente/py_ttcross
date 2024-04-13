@@ -158,31 +158,53 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     return index[:r].copy(), C.T
 
 
-def greedy_pivot_finder(A: np.ndarray, I: np.ndarray, J: np.ndarray, max_iters=100) -> tuple[int]:
+# @njit() -> This would benefit tremendously froom numba
+def greedy_pivot_finder(
+    A: np.ndarray, I: np.ndarray, I_1i: np.ndarray, J: np.ndarray, J_1j, max_iters=100, tol: float = 1e-10
+) -> tuple[int]:
     """Greedy pivot finder algorithm, which given a matrix A and the current cross aproximations obtained from rows I
-    and columns J, finds a new pivot (i_new, j_new) that maximizes the difference between A and Approx.
+    and columns J, finds a new pivot (i_new, j_new) that minimizes the difference between A and Approx.
 
     Args:
         A (np.ndarray): The input matrix of shape (n, r) which we want to approximate.
-        I (np.ndarray): The current best rows of A that form the cross approximation.
-        J (np.ndarray): The current best columns of A that form the cross approximation.
-        max_iters (int, optional): The maximum number of updates to the new indices. Defaults to 100.
+        I (np.ndarray): The current best rows of A, in terms of sets of indices of all the k previous sites of the mps
+        (current site included)
+        I_1i (np.ndarray): All the rows of Athat form the cross approximation, in terms of sets of indices of all the
+        k-1 previous sites plus all the values for the current site.
 
-    Raises:
-        ValueError: If I and J are not 1D arrays.
-        IndexError: If I or J contain indices that are out of bounds of the input matrix.
+        J (np.ndarray): The current best columns of A, in terms of sets of indices of all sites from k+1 until n (current
+        site included)
+        J_1j (np.ndarray): The current best columns of A that form the cross approximation, in terms of sets of indices of all the
+        sites from k+1rightwards, plus all the values for the current site.
+        max_iters (int, optional): The maximum number of updates to the new indices. Defaults to 100.
+        tol (float): The tolerance that the algorithm will use to check for convergence of the approximation.
 
     Returns:
-        tuple[int]: The new indices (i_new, j_new) that improve the approximation.
     """
 
-    if len(I.shape) != len(J.shape) != 1:
-        raise ValueError("I and J must be 1D arrays")
-    if any(I > A.shape[0]) or any(J > A.shape[1]):
-        raise IndexError("I and J must be within the bounds of the input matrix")
+    # if len(I.shape) != len(J.shape) != 1:
+    #     raise ValueError("I and J must be 1D arrays")
+    # if any(I > A.shape[0]) or any(J > A.shape[1]):
+    #     raise IndexError("I and J must be within the bounds of the input matrix")
 
-    Approx = A[I][:, J]
+    old_is = []
+    for i in I:
+        for index in range(len(I_1i)):
+            if i == I_1i[index]:
+                old_is.append(index)
+                break
 
+    old_js = []
+    for j in J:
+        for index in range(len(J_1j)):
+            if j == J_1j[index]:
+                old_js.append(index)
+                break
+
+    square_core = A[old_is][:, old_js]
+    Approx = A[:, old_js] @ np.linalg.inv(square_core) @ A[old_is]
+
+    # This can be optimized to not have to evaluate so many elements
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
 
     for _ in max_iters:
@@ -190,8 +212,28 @@ def greedy_pivot_finder(A: np.ndarray, I: np.ndarray, J: np.ndarray, max_iters=1
         j_new = np.argmax(np.abs(A[i_new] - Approx[i_new]))
 
         if np.argmax(np.abs(A[:, j_new] - Approx[:, j_new])) <= np.abs(A[i_new, j_new] - Approx[i_new, j_new]) and (
-            np.argmax(np.abs(A[i_new] - Approx[i_new])) <= np.argmax(np.abs(A[i_new, j_new] - Approx[i_new, j_new]))
+            np.argmax(np.abs(A[i_new] - Approx[i_new])) <= np.abs(A[i_new, j_new] - Approx[i_new, j_new])
         ):
-            return i_new, j_new
 
-    return i_new, j_new
+            if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
+                return I, J
+
+            pivot_i = I_1i[i_new]
+            pivot_j = J_1j[j_new]
+
+            I_new = np.stack((I, pivot_i))
+            J_new = np.stack((J, pivot_j))
+
+            return I_new, J_new, len(I_new), len(J_new)
+
+    # We will use this to not increase the rank of the approximation
+    if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
+        return I, J, len(I), len(J)
+
+    pivot_i = I_1i[i_new]
+    pivot_j = J_1j[j_new]
+
+    I_new = np.stack((I, pivot_i))
+    J_new = np.stack((J, pivot_j))
+
+    return I_new, J_new, len(I_new), len(J_new)
