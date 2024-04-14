@@ -24,24 +24,37 @@ class tt_integrator:
 
         self.f_type = np.complex128 if is_f_complex else np.float64
 
+        self.bonds = np.ndarray(self.num_variables + 1, dtype=np.ndarray)
+        self.bonds[0] = 1
+        self.bonds[-1] = 1
+
     def _obtain_superblock_total_indices(self, site: int):
         total_indices_left = []
         total_indices_right = []
-        for i_1 in self.i[site + 1 - 1]:
-            for i in range(len(self.grid[site])):
-                total_indices_left.append(np.concatenate((i_1, i)))
+        if site == 0:
+            for i in self.grid[site]:
+                total_indices_left.append([i])
+        else:
+            for i_1 in self.i[site + 1 - 1]:
+                for i in self.grid[site]:
+                    total_indices_left.append(np.concatenate((i_1, [i])))
 
-        for j_1 in self.j[site + 1]:
-            for j in range(len(self.grid[site + 1])):
-                total_indices_right.append(np.concatenate((j, j_1)))
+        if site == self.num_variables - 2:
+            for j in self.grid[site]:
+                total_indices_right.append([j])
+        else:
+            for j_1 in self.j[site + 1]:
+                for j in self.grid[site + 1]:
+                    total_indices_right.append(np.concatenate(([j], j_1)))
 
-        return total_indices_left, total_indices_right
+        return np.array(total_indices_left), np.array(total_indices_right)
 
     # TODO Loops are probably not the best idea here, but we can optimize them later (use numba here)
-    def compute_single_site_tensor(self, site):
-        tensor = np.ndarray((self.bonds[site - 1], len(self.grid[site]), self.bonds[site]), dtype=self.f_type)
 
-        for s, left in enumerate(self.i[site - 1]):
+    def compute_single_site_tensor(self, site):
+        tensor = np.ndarray((len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.j[site])), dtype=self.f_type)
+
+        for s, left in enumerate(self.i[site + 1 - 1]):
             for k, right in enumerate(self.j[site]):
                 for m, i in enumerate(self.grid[site]):
 
@@ -59,11 +72,11 @@ class tt_integrator:
     # TODO Loops are probably not the best idea here, but we can optimize them later (use numba here)
     def compute_superblock_tensor(self, site):
         tensor = np.ndarray(
-            (len(self.i[site - 1]), len(self.grid[site]), len(self.grid[site + 1]), len(self.j[site + 1])),
+            (len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.grid[site + 1]), len(self.j[site + 1])),
             dtype=self.f_type,
         )
 
-        for s, left in enumerate(self.i[site - 1]):
+        for s, left in enumerate(self.i[site + 1 - 1]):
             for k, right in enumerate(self.j[site + 1]):
                 for m, i in enumerate(self.grid[site]):
                     for n, j in enumerate(self.grid[site + 1]):
@@ -195,6 +208,21 @@ class ttrc(tt_integrator):
 
 
 class greedy_cross(tt_integrator):
+    def __init__(
+        self,
+        func: FunctionType,
+        num_variables: int,
+        grid: np.ndarray,
+        tol: float,
+        max_bond: int,
+        sweeps: int,
+        is_f_complex=False,
+    ):
+        super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex)
+        self.max_bond = max_bond
+        self._create_initial_index_sets()
+        self._create_initial_bonds()
+
     def _create_initial_index_sets(self):
         self.i = np.ndarray(self.num_variables, dtype=object)
         self.i[0] = np.array([[1.0]])
@@ -214,6 +242,9 @@ class greedy_cross(tt_integrator):
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
 
     def index_update(self, site: int):
+        if self.bonds[site] == self.max_bond:
+            return
+
         superblock_tensor = self.compute_superblock_tensor(site)
         superblock_tensor = np.reshape(
             superblock_tensor,
@@ -226,13 +257,13 @@ class greedy_cross(tt_integrator):
         I_1i, J_1j = self._obtain_superblock_total_indices(site)
         new_I, new_J, rk, _ = greedy_pivot_finder(
             superblock_tensor,
-            self.i[site],
-            self.j[site],
+            self.i[site + 1].copy(),
             I_1i,
+            self.j[site].copy(),
             J_1j,
         )
 
-        self.i[site] = new_I
+        self.i[site + 1] = new_I
         self.j[site] = new_J
         self.bonds[site] = rk
 

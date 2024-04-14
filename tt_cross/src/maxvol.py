@@ -189,15 +189,15 @@ def greedy_pivot_finder(
 
     old_is = []
     for i in I:
-        for index in range(len(I_1i)):
-            if i == I_1i[index]:
+        for index, i_ext in enumerate(I_1i):
+            if np.array_equal(i, i_ext):
                 old_is.append(index)
                 break
 
     old_js = []
     for j in J:
-        for index in range(len(J_1j)):
-            if j == J_1j[index]:
+        for index, j_ext in enumerate(J_1j):
+            if np.array_equal(j, j_ext):
                 old_js.append(index)
                 break
 
@@ -207,7 +207,7 @@ def greedy_pivot_finder(
     # This can be optimized to not have to evaluate so many elements
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
 
-    for _ in max_iters:
+    for _ in range(max_iters):
         i_new = np.argmax(np.abs(A[:, j_new] - Approx[:, j_new]))
         j_new = np.argmax(np.abs(A[i_new] - Approx[i_new]))
 
@@ -221,8 +221,8 @@ def greedy_pivot_finder(
             pivot_i = I_1i[i_new]
             pivot_j = J_1j[j_new]
 
-            I_new = np.stack((I, pivot_i))
-            J_new = np.stack((J, pivot_j))
+            I_new = np.vstack((I, pivot_i))
+            J_new = np.vstack((J, pivot_j))
 
             return I_new, J_new, len(I_new), len(J_new)
 
@@ -233,7 +233,7 @@ def greedy_pivot_finder(
     pivot_i = I_1i[i_new]
     pivot_j = J_1j[j_new]
 
-    I_new = np.stack((I, pivot_i))
-    J_new = np.stack((J, pivot_j))
+    I_new = np.vstack((I, [pivot_i]))
+    J_new = np.vstack((J, [pivot_j]))
 
     return I_new, J_new, len(I_new), len(J_new)
