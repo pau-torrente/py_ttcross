@@ -1,8 +1,5 @@
-from ast import Pass
 import numpy as np
 import numba as nb
-from ncon import ncon
-from sympy import N
 from .maxvol import greedy_pivot_finder, maxvol
 from types import FunctionType
 
@@ -18,7 +15,7 @@ class tt_integrator:
         is_f_complex=False,
     ):
         self.func = func
-        if len(grid.shape) != num_variables:
+        if len(grid) != num_variables:
             raise ValueError("The grid must have the same number of dimensions as the number of variables")
         self.num_variables = num_variables
         self.grid = grid
@@ -49,13 +46,13 @@ class tt_integrator:
                 for m, i in enumerate(self.grid[site]):
 
                     if site == 0:
-                        point = np.concatenate((i, right))
+                        point = np.concatenate(([i], right))
                     elif site == self.num_variables - 1:
-                        point = np.concatenate((left, i))
+                        point = np.concatenate((left, [i]))
                     else:
-                        point = np.concatenate((left, i, right))
+                        point = np.concatenate((left, [i], right))
 
-                    tensor[s, k, m] = self.func(point)
+                    tensor[s, m, k] = self.func(point)
 
         return tensor
 
@@ -72,11 +69,11 @@ class tt_integrator:
                     for n, j in enumerate(self.grid[site + 1]):
 
                         if site == 0:
-                            point = np.concatenate((i, j, right))
+                            point = np.concatenate(([i], [j], right))
                         elif site == self.num_variables - 1:
-                            point = np.concatenate((left, i, j))
+                            point = np.concatenate((left, [i], [j]))
                         else:
-                            point = np.concatenate((left, i, j, right))
+                            point = np.concatenate((left, [i], [j], right))
 
                         tensor[s, m, n, k] = self.func(point)
 
@@ -109,38 +106,42 @@ class ttrc(tt_integrator):
 
     def _create_initial_index_sets(self):
         self.i = np.ndarray(self.num_variables, dtype=object)
-        self.i[0] = np.array([1])
-        self.i[1] = np.random.choice(self.grid[0], size=min(len(self.grid[0]), self.max_bond), replace=False)
+        self.i[0] = np.array([[1]])
+        self.i[1] = np.array(
+            [np.random.choice(self.grid[0], size=min(len(self.grid[0]), self.max_bond), replace=False)]
+        )
         for k in range(2, self.num_variables):
-            current_index = np.random.choice(
-                self.grid[k - 1], size=min(len(self.grid[k - 1]), self.max_bond), replace=False
+            current_index = np.array(
+                [np.random.choice(self.grid[k - 1], size=min(len(self.grid[k - 1]), self.max_bond), replace=False)]
             )
             if len(current_index) < len(self.i[k - 1]):
-                previous_choice = np.random.choice(self.i[k - 1], size=len(current_index), replace=False)
-                self.i[k] = np.column_stack(previous_choice, current_index)
+                previous_choice = np.array([np.random.choice(self.i[k - 1], size=len(current_index), replace=False)])
+                self.i[k] = np.column_stack((previous_choice, current_index))
             else:
                 times = len(current_index) // len(self.i[k - 1])
                 previous_choice = np.row_stack([self.i[k - 1] for _ in range(times + 1)])
-                self.i[k] = np.column_stack(previous_choice[: len(current_index)], current_index)
+                self.i[k] = np.column_stack((previous_choice[: len(current_index)], current_index))
 
         # =======================================================================================================
 
         self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
-        self.j[-1] = np.array([1])
-        self.j[-2] = np.random.choice(self.grid[-1], size=min(len(self.grid[-1]), self.max_bond), replace=False)
+        self.j[-1] = np.array([[1]])
+        self.j[-2] = np.array(
+            [np.random.choice(self.grid[-1], size=min(len(self.grid[-1]), self.max_bond), replace=False)]
+        )
 
         for k in range(-3, -self.num_variables - 1, -1):
-            current_index = np.random.choice(
-                self.grid[k + 1], size=min(len(self.grid[k + 1]), self.max_bond), replace=False
+            current_index = np.array(
+                [np.random.choice(self.grid[k + 1], size=min(len(self.grid[k + 1]), self.max_bond), replace=False)]
             )
 
             if len(current_index) < len(self.j[k + 1]):
-                previous_choice = np.random.choice(self.j[k + 1], size=len(current_index), replace=False)
-                self.j[k] = np.column_stack(current_index, previous_choice)
+                previous_choice = np.array([np.random.choice(self.j[k + 1], size=len(current_index), replace=False)])
+                self.j[k] = np.column_stack((current_index, previous_choice))
             else:
                 times = len(current_index) // len(self.j[k + 1])
-                previous_choice = np.column_stack([self.j[k + 1] for _ in range(times + 1)])
-                self.j[k] = np.column_stack(current_index, previous_choice[: len(current_index)])
+                previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
+                self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
 
     def _create_initial_bond_dimensions(self):
         self.bonds = np.ndarray(self.num_variables - 1, dtype=int)
@@ -196,18 +197,18 @@ class ttrc(tt_integrator):
 class greedy_cross(tt_integrator):
     def _create_initial_index_sets(self):
         self.i = np.ndarray(self.num_variables, dtype=object)
-        self.i[0] = np.array([1])
-        self.i[1] = np.array([np.random.choice(self.grid[0])])
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[np.random.choice(self.grid[0])]])
         for i in range(2, self.num_variables):
             current_index = np.array([np.random.choice(self.grid[i - 1])])
-            self.i[i] = np.column_stack(self.i[i - 1], current_index)
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
         self.j = np.ndarray(self.num_variables, dtype=object)
-        self.j[-1] = np.array([1])
-        self.j[-2] = np.array([np.random.choice(self.grid[-1])])
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[np.random.choice(self.grid[-1])]])
         for i in range(-3, -self.num_variables - 1, -1):
             current_index = np.array([np.random.choice(self.grid[i + 1])])
-            self.j[i] = np.column_stack(current_index, self.j[i + 1])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self):
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
@@ -239,6 +240,16 @@ class greedy_cross(tt_integrator):
         for site in range(self.num_variables - 1):
             self.index_update(site)
 
+        for site in range(self.num_variables - 2, -1, -1):
+            self.index_update(site)
+
     def run(self):
         for _ in range(self.sweeps):
             self.full_sweep()
+
+        mps = np.ndarray(self.num_variables, dtype=np.ndarray)
+
+        for site in range(self.num_variables):
+            mps[site] = self.compute_single_site_tensor(site)
+
+        return mps
