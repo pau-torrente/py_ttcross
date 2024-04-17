@@ -238,6 +238,21 @@ class greedy_cross(tt_integrator):
             current_index = np.array([np.random.choice(self.grid[i + 1])])
             self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
+    def _create_initial_index_sets(self):
+        self.i = np.ndarray(self.num_variables, dtype=object)
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[self.grid[0][0]]])
+        for i in range(2, self.num_variables):
+            current_index = np.array([self.grid[i - 1][0]])
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
+
+        self.j = np.ndarray(self.num_variables, dtype=object)
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[self.grid[-1][0]]])
+        for i in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[i + 1][0]])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+
     def _create_initial_bonds(self):
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
 
@@ -262,6 +277,7 @@ class greedy_cross(tt_integrator):
             self.j[site].copy(),
             J_1j,
         )
+        # return new_I, new_J, rk
 
         self.i[site + 1] = new_I
         self.j[site] = new_J
@@ -276,7 +292,10 @@ class greedy_cross(tt_integrator):
 
     def run(self):
         for _ in range(self.sweeps):
+            pre_sweep_bonds = self.bonds.copy()
             self.full_sweep()
+            if np.array_equal(pre_sweep_bonds, self.bonds):
+                break
 
         mps = np.ndarray(self.num_variables, dtype=np.ndarray)
 

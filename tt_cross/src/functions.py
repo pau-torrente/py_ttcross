@@ -1,8 +1,9 @@
 import numpy as np
-import numba as nb
+
+# import numba as nb
 
 
-@nb.njit()  # -> Especially important for cases where the function contains loops
+# @nb.njit()  # -> Especially important for cases where the function contains loops
 def func_template(x: np.ndarray, num_variables: int = None) -> complex:
     # THIS IS OPTIONAL, AND MIGHT SLOW DOWN THE FUNCTION
     if num_variables is not None and len(x) != num_variables:
@@ -23,6 +24,10 @@ def log_of_sum(x: np.ndarray, num_variables: int = None) -> float:
 
 def slater(x: np.ndarray, num_variables: int = None) -> float:
     return np.exp(-np.linalg.norm(x)) / np.linalg.norm(x)
+
+
+def inverse_mod(x: np.ndarray, num_variables: int = None) -> float:
+    return 1 / np.sum(x**2)
 
 
 def convert_from_binary(x: np.ndarray, d: int) -> float:

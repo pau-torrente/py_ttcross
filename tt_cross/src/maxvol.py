@@ -1,4 +1,3 @@
-from ast import Index
 import numpy as np
 import numba as nb
 from scipy.linalg import get_blas_funcs, get_lapack_funcs, lu_factor
@@ -158,7 +157,7 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     return index[:r].copy(), C.T
 
 
-# @njit() -> This would benefit tremendously froom numba
+# @nb.njit()  # -> This would benefit tremendously froom numba
 def greedy_pivot_finder(
     A: np.ndarray, I: np.ndarray, I_1i: np.ndarray, J: np.ndarray, J_1j, max_iters=100, tol: float = 1e-10
 ) -> tuple[int]:
@@ -205,7 +204,11 @@ def greedy_pivot_finder(
     Approx = A[:, old_js] @ np.linalg.inv(square_core) @ A[old_is]
 
     # This can be optimized to not have to evaluate so many elements
+    # TODO THIS ENDS UP FINDING THE PIVOT ALREADY IN THE CROSS -> IN THIS CASE, WE SHOULD NOT INCREASE THE RANK
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
+
+    if i_new in old_is or j_new in old_js:
+        return I, J, len(I), len(J)
 
     for _ in range(max_iters):
         i_new = np.argmax(np.abs(A[:, j_new] - Approx[:, j_new]))
@@ -216,7 +219,7 @@ def greedy_pivot_finder(
         ):
 
             if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
-                return I, J
+                return I, J, len(I), len(J)
 
             pivot_i = I_1i[i_new]
             pivot_j = J_1j[j_new]
@@ -226,7 +229,7 @@ def greedy_pivot_finder(
 
             return I_new, J_new, len(I_new), len(J_new)
 
-    # We will use this to not increase the rank of the approximation
+    # # We will use this to not increase the rank of the approximation
     if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
         return I, J, len(I), len(J)
 
