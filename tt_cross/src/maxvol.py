@@ -58,11 +58,11 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
     C = H[:r]
 
     # Solve the system C^T * X = H^T
-    # D = np.linalg.solve(C.T, H.T).T
+    D = np.linalg.solve(C.T, H.T).T
 
-    trtrs = get_lapack_funcs("trtrs", [C])
-    trtrs(C, B.T, trans=1, lower=0, unitdiag=0, overwrite_b=1)
-    trtrs(C, B.T, trans=1, lower=1, unitdiag=1, overwrite_b=1)
+    # trtrs = get_lapack_funcs("trtrs", [C])
+    # trtrs(C, B.T, trans=1, lower=0, unitdiag=0, overwrite_b=1)
+    # trtrs(C, B.T, trans=1, lower=1, unitdiag=1, overwrite_b=1)
 
     iter = 1
 
@@ -208,7 +208,7 @@ def greedy_pivot_finder(
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
 
     if i_new in old_is or j_new in old_js:
-        return I, J, len(I), len(J)
+        return I, J, len(I), len(J), np.sum(np.abs(A - Approx))
 
     for _ in range(max_iters):
         i_new = np.argmax(np.abs(A[:, j_new] - Approx[:, j_new]))
@@ -219,7 +219,7 @@ def greedy_pivot_finder(
         ):
 
             if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
-                return I, J, len(I), len(J)
+                return I, J, len(I), len(J), np.sum(np.abs(A - Approx))
 
             pivot_i = I_1i[i_new]
             pivot_j = J_1j[j_new]
@@ -227,11 +227,11 @@ def greedy_pivot_finder(
             I_new = np.vstack((I, pivot_i))
             J_new = np.vstack((J, pivot_j))
 
-            return I_new, J_new, len(I_new), len(J_new)
+            return I_new, J_new, len(I_new), len(J_new), np.linalg.det(np.abs(A - Approx))
 
     # # We will use this to not increase the rank of the approximation
     if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
-        return I, J, len(I), len(J)
+        return I, J, len(I), len(J), np.sum(np.abs(A - Approx))
 
     pivot_i = I_1i[i_new]
     pivot_j = J_1j[j_new]
@@ -239,4 +239,4 @@ def greedy_pivot_finder(
     I_new = np.vstack((I, [pivot_i]))
     J_new = np.vstack((J, [pivot_j]))
 
-    return I_new, J_new, len(I_new), len(J_new)
+    return I_new, J_new, len(I_new), len(J_new), np.sum(np.abs(A - Approx))

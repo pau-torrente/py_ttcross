@@ -2,9 +2,10 @@ import numpy as np
 import numba as nb
 from .maxvol import greedy_pivot_finder, maxvol
 from types import FunctionType
+from ncon import ncon
 
 
-class tt_integrator:
+class tt_interpolator:
     def __init__(
         self,
         func: FunctionType,
@@ -29,23 +30,26 @@ class tt_integrator:
         self.bonds[-1] = 1
 
     def _obtain_superblock_total_indices(self, site: int):
+        # TODO Index I and J in here to remove redundancy
         total_indices_left = []
         total_indices_right = []
         if site == 0:
             for i in self.grid[site]:
                 total_indices_left.append([i])
         else:
-            for i_1 in self.i[site + 1 - 1]:
+            for I_1 in self.i[site + 1 - 1]:
                 for i in self.grid[site]:
-                    total_indices_left.append(np.concatenate((i_1, [i])))
+                    total_indices_left.append(np.concatenate((I_1, [i])))
 
         if site == self.num_variables - 2:
             for j in self.grid[site]:
                 total_indices_right.append([j])
         else:
-            for j_1 in self.j[site + 1]:
+            for J_1 in self.j[site + 1]:
                 for j in self.grid[site + 1]:
-                    total_indices_right.append(np.concatenate(([j], j_1)))
+                    index_set = np.concatenate(([j], J_1))
+
+                    total_indices_right.append(np.concatenate(([j], J_1)))
 
         return np.array(total_indices_left), np.array(total_indices_right)
 
@@ -93,7 +97,7 @@ class tt_integrator:
         return tensor
 
 
-class ttrc(tt_integrator):
+class ttrc(tt_interpolator):
     def __init__(
         self,
         func: FunctionType,
@@ -207,7 +211,7 @@ class ttrc(tt_integrator):
         # return j_k
 
 
-class greedy_cross(tt_integrator):
+class greedy_cross(tt_interpolator):
     def __init__(
         self,
         func: FunctionType,
@@ -222,6 +226,7 @@ class greedy_cross(tt_integrator):
         self.max_bond = max_bond
         self._create_initial_index_sets()
         self._create_initial_bonds()
+        self.error = []
 
     def _create_initial_index_sets(self):
         self.i = np.ndarray(self.num_variables, dtype=object)
@@ -238,20 +243,20 @@ class greedy_cross(tt_integrator):
             current_index = np.array([np.random.choice(self.grid[i + 1])])
             self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
-    def _create_initial_index_sets(self):
-        self.i = np.ndarray(self.num_variables, dtype=object)
-        self.i[0] = np.array([[1.0]])
-        self.i[1] = np.array([[self.grid[0][0]]])
-        for i in range(2, self.num_variables):
-            current_index = np.array([self.grid[i - 1][0]])
-            self.i[i] = np.column_stack((self.i[i - 1], current_index))
+    # def _create_initial_index_sets(self):
+    #     self.i = np.ndarray(self.num_variables, dtype=object)
+    #     self.i[0] = np.array([[1.0]])
+    #     self.i[1] = np.array([[self.grid[0][0]]])
+    #     for i in range(2, self.num_variables):
+    #         current_index = np.array([self.grid[i - 1][0]])
+    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-        self.j = np.ndarray(self.num_variables, dtype=object)
-        self.j[-1] = np.array([[1.0]])
-        self.j[-2] = np.array([[self.grid[-1][0]]])
-        for i in range(-3, -self.num_variables - 1, -1):
-            current_index = np.array([self.grid[i + 1][0]])
-            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+    #     self.j = np.ndarray(self.num_variables, dtype=object)
+    #     self.j[-1] = np.array([[1.0]])
+    #     self.j[-2] = np.array([[self.grid[-1][0]]])
+    #     for i in range(-3, -self.num_variables - 1, -1):
+    #         current_index = np.array([self.grid[i + 1][0]])
+    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self):
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
@@ -270,7 +275,7 @@ class greedy_cross(tt_integrator):
         )
 
         I_1i, J_1j = self._obtain_superblock_total_indices(site)
-        new_I, new_J, rk, _ = greedy_pivot_finder(
+        new_I, new_J, rk, _, error = greedy_pivot_finder(
             superblock_tensor,
             self.i[site + 1].copy(),
             I_1i,
@@ -278,7 +283,7 @@ class greedy_cross(tt_integrator):
             J_1j,
         )
         # return new_I, new_J, rk
-
+        self.error.append(error)
         self.i[site + 1] = new_I
         self.j[site] = new_J
         self.bonds[site] = rk
@@ -303,3 +308,69 @@ class greedy_cross(tt_integrator):
             mps[site] = self.compute_single_site_tensor(site)
 
         return mps
+
+
+class one_dim_function_interpolator:
+    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
+        self.d = d
+        n = 2**d
+        self.h = (interval[1] - interval[0]) / n
+        self.interval = interval
+        self.grid = np.array(
+            [[0, 1] for _ in range(self.d)],
+            dtype=np.float64,
+        )
+        self.complex_f = complex_function
+        self.func = func
+        self.interpolated = False
+
+    def x(self, binary_i: np.ndarray) -> np.float_:
+        i = np.sum([ip * 2**index for index, ip in enumerate(np.flip(binary_i))])
+        return (i + 0.5) * self.h + self.interval[0]
+
+    def func_from_binary(self, binary_i: np.ndarray) -> np.float_:
+        return self.func(self.x(binary_i))
+
+    def interpolate(self, max_bond: int, tol: float, sweeps: int) -> None:
+        self.interpolator = greedy_cross(
+            func=self.func_from_binary,
+            num_variables=self.d,
+            grid=self.grid,
+            tol=tol,
+            max_bond=max_bond,
+            sweeps=sweeps,
+            is_f_complex=self.complex_f,
+        )
+        self.interpolation = self.interpolator.run()
+        self.interpolated = True
+
+    def _eval_contraction_tensors(self, x: np.float_) -> np.ndarray:
+        i = int(np.round((x - self.interval[0]) / self.h - 0.5))
+        bin_i = np.array([int(ip) for ip in np.binary_repr(i, width=self.d)], dtype=np.int_)
+        return np.array([[1, 0] if bin_i[site] == 0 else [0, 1] for site in range(self.d)], dtype=np.int_)
+
+    def eval(self, x: np.float_) -> np.float_:
+        if not self.interpolated:
+            raise ValueError("The function has not been interpolated yet")
+
+        interpolation_tensors = self.interpolation.copy()
+        contr_tensors = self._eval_contraction_tensors(x)
+
+        result = interpolation_tensors[0][0]
+        result = ncon(
+            [result, contr_tensors[0]],
+            [[1, -1], [1]],
+        )
+
+        for i in range(1, self.d):
+            result = ncon(
+                [result, interpolation_tensors[i]],
+                [[1], [1, -1, -2]],
+            )
+
+            result = ncon(
+                [result, contr_tensors[i]],
+                [[1, -1], [1]],
+            )
+
+        return result[0]
