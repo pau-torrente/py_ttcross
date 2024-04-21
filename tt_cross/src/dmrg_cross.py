@@ -73,6 +73,20 @@ class tt_interpolator:
 
         return tensor
 
+    def compute_cross_blocks(self, site):
+        if len(self.i[site + 1]) != len(self.j[site]):
+            raise ValueError("The left and right indexes must have the same dimension")
+
+        block = np.ndarray((len(self.i[site + 1]), len(self.j[site])), dtype=self.f_type)
+
+        for s, left in enumerate(self.i[site + 1]):
+            for k, right in enumerate(self.j[site]):
+                block[s, k] = self.func(np.concatenate((left, right)))
+
+        inv_block = np.linalg.inv(block)
+
+        return inv_block
+
     # TODO Loops are probably not the best idea here, but we can optimize them later (use numba here)
     def compute_superblock_tensor(self, site):
         tensor = np.ndarray(
@@ -229,10 +243,10 @@ class greedy_cross(tt_interpolator):
         self.error = []
 
     def _create_initial_index_sets(self):
-        self.i = np.ndarray(self.num_variables, dtype=object)
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
         self.i[0] = np.array([[1.0]])
         self.i[1] = np.array([[np.random.choice(self.grid[0])]])
-        for i in range(2, self.num_variables):
+        for i in range(2, self.num_variables + 1):
             current_index = np.array([np.random.choice(self.grid[i - 1])])
             self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
@@ -243,20 +257,20 @@ class greedy_cross(tt_interpolator):
             current_index = np.array([np.random.choice(self.grid[i + 1])])
             self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
-    # def _create_initial_index_sets(self):
-    #     self.i = np.ndarray(self.num_variables, dtype=object)
-    #     self.i[0] = np.array([[1.0]])
-    #     self.i[1] = np.array([[self.grid[0][0]]])
-    #     for i in range(2, self.num_variables):
-    #         current_index = np.array([self.grid[i - 1][0]])
-    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
+    def _create_initial_index_sets(self):
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[self.grid[0][0]]])
+        for i in range(2, self.num_variables + 1):
+            current_index = np.array([self.grid[i - 1][0]])
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-    #     self.j = np.ndarray(self.num_variables, dtype=object)
-    #     self.j[-1] = np.array([[1.0]])
-    #     self.j[-2] = np.array([[self.grid[-1][0]]])
-    #     for i in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[i + 1][0]])
-    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+        self.j = np.ndarray(self.num_variables, dtype=object)
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[self.grid[-1][0]]])
+        for i in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[i + 1][0]])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self):
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
@@ -302,10 +316,13 @@ class greedy_cross(tt_interpolator):
             if np.array_equal(pre_sweep_bonds, self.bonds):
                 break
 
-        mps = np.ndarray(self.num_variables, dtype=np.ndarray)
+        mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
-        for site in range(self.num_variables):
-            mps[site] = self.compute_single_site_tensor(site)
+        for site in range(self.num_variables - 1):
+            mps[2 * site] = self.compute_single_site_tensor(site)
+            mps[2 * site + 1] = self.compute_cross_blocks(site)
+
+        mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
 
         return mps
 
@@ -358,19 +375,21 @@ class one_dim_function_interpolator:
 
         result = interpolation_tensors[0][0]
         result = ncon(
-            [result, contr_tensors[0]],
-            [[1, -1], [1]],
+            [contr_tensors[0], result],
+            [[1], [1, -1]],
         )
 
         for i in range(1, self.d):
             result = ncon(
-                [result, interpolation_tensors[i]],
-                [[1], [1, -1, -2]],
+                [result, interpolation_tensors[2 * i - 1]],
+                [[1], [1, -1]],
             )
 
+            result = ncon([result, interpolation_tensors[2 * i]], [[1], [1, -1, -2]])
+
             result = ncon(
-                [result, contr_tensors[i]],
-                [[1, -1], [1]],
+                [contr_tensors[i], result],
+                [[1], [1, -1]],
             )
 
         return result[0]

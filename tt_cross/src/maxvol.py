@@ -227,7 +227,7 @@ def greedy_pivot_finder(
             I_new = np.vstack((I, pivot_i))
             J_new = np.vstack((J, pivot_j))
 
-            return I_new, J_new, len(I_new), len(J_new), np.linalg.det(np.abs(A - Approx))
+            return I_new, J_new, len(I_new), len(J_new), np.sum(np.abs(A - Approx))
 
     # # We will use this to not increase the rank of the approximation
     if np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
