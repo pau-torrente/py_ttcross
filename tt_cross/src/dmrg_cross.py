@@ -264,7 +264,7 @@ class ttrc(tt_interpolator):
         utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
-        chitemp = min(np.argmax(stemp_cumsum > (1.0 - self.trunctol) * stemp_cumsum[-1]), self.max_bond)
+        chitemp = min(np.argmax(stemp_cumsum > (1.0 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
 
         utemp = utemp[:, :chitemp]
         vtemp = vtemp[:chitemp, :]
@@ -307,7 +307,7 @@ class ttrc(tt_interpolator):
         utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
-        chitemp = min(np.argmax(stemp_cumsum > (1 - self.trunctol) * stemp_cumsum[-1]), self.max_bond)
+        chitemp = min(np.argmax(stemp_cumsum > (1 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
 
         utemp = utemp[:, :chitemp]
         vtemp = vtemp[:chitemp, :]
@@ -346,11 +346,17 @@ class ttrc(tt_interpolator):
 
         mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
-        for site in range(self.num_variables - 1):
-            mps[2 * site] = self.b[site]
-            mps[2 * site + 1] = self.p[site + 1]
+        # for site in range(self.num_variables - 1):
+        #     mps[2 * site] = self.b[site]
+        #     mps[2 * site + 1] = self.p[site + 1]
 
-        mps[-1] = self.b[-1]
+        # mps[-1] = self.b[-1]
+
+        for site in range(self.num_variables - 1):
+            mps[2 * site] = self.compute_single_site_tensor(site)
+            mps[2 * site + 1] = self.compute_cross_blocks(site)
+
+        mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
         return mps
 
 
