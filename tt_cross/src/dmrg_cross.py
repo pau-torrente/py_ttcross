@@ -1,6 +1,6 @@
 import numpy as np
 import numba as nb
-from .maxvol import greedy_pivot_finder, maxvol
+from .maxvol import greedy_pivot_finder, maxvol, py_maxvol
 from types import FunctionType
 from ncon import ncon
 
@@ -47,8 +47,6 @@ class tt_interpolator:
         else:
             for J_1 in self.j[site + 1]:
                 for j in self.grid[site + 1]:
-                    index_set = np.concatenate(([j], J_1))
-
                     total_indices_right.append(np.concatenate(([j], J_1)))
 
         return np.array(total_indices_left), np.array(total_indices_right)
@@ -117,12 +115,13 @@ class ttrc(tt_interpolator):
         func: FunctionType,
         num_variables: int,
         grid: np.ndarray,
-        tol: float,
+        maxvol_tol: float,
+        truncation_tol: float,
         sweeps: int,
         initial_bond_guess: int,
         is_f_complex=False,
     ):
-        super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex)
+        super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex)
 
         if initial_bond_guess > max(grid.shape):
             initial_bond_guess = max(grid.shape)
@@ -134,22 +133,24 @@ class ttrc(tt_interpolator):
             self.max_bond = initial_bond_guess
 
         self._create_initial_arrays()
+        self.trunctol = truncation_tol
 
     def _create_initial_index_sets(self):
-        self.i = np.ndarray(self.num_variables, dtype=object)
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
         self.i[0] = np.array([[1]])
         self.i[1] = np.array(
             [np.random.choice(self.grid[0], size=min(len(self.grid[0]), self.max_bond), replace=False)]
-        )
-        for k in range(2, self.num_variables):
+        ).T
+        for k in range(2, self.num_variables + 1):
             current_index = np.array(
                 [np.random.choice(self.grid[k - 1], size=min(len(self.grid[k - 1]), self.max_bond), replace=False)]
-            )
-            if len(current_index) < len(self.i[k - 1]):
-                previous_choice = np.array([np.random.choice(self.i[k - 1], size=len(current_index), replace=False)])
-                self.i[k] = np.column_stack((previous_choice, current_index))
+            ).T
+            if len(current_index) <= len(self.i[k - 1]):
+                previous_selected_rows = np.random.choice(len(self.i[k - 1]), size=len(current_index), replace=False)
+                previous_indices = self.i[k - 1][previous_selected_rows]
+                self.i[k] = np.column_stack((previous_indices, current_index))
             else:
-                times = len(current_index) // len(self.i[k - 1])
+                times = len(current_index[0]) // len(self.i[k - 1][0])
                 previous_choice = np.row_stack([self.i[k - 1] for _ in range(times + 1)])
                 self.i[k] = np.column_stack((previous_choice[: len(current_index)], current_index))
 
@@ -159,15 +160,16 @@ class ttrc(tt_interpolator):
         self.j[-1] = np.array([[1]])
         self.j[-2] = np.array(
             [np.random.choice(self.grid[-1], size=min(len(self.grid[-1]), self.max_bond), replace=False)]
-        )
+        ).T
 
         for k in range(-3, -self.num_variables - 1, -1):
             current_index = np.array(
                 [np.random.choice(self.grid[k + 1], size=min(len(self.grid[k + 1]), self.max_bond), replace=False)]
-            )
+            ).T
 
-            if len(current_index) < len(self.j[k + 1]):
-                previous_choice = np.array([np.random.choice(self.j[k + 1], size=len(current_index), replace=False)])
+            if len(current_index) <= len(self.j[k + 1]):
+                selected_columns = np.random.choice(len(self.j[k + 1]), size=len(current_index), replace=False)
+                previous_choice = self.j[k + 1][selected_columns]
                 self.j[k] = np.column_stack((current_index, previous_choice))
             else:
                 times = len(current_index) // len(self.j[k + 1])
@@ -176,23 +178,27 @@ class ttrc(tt_interpolator):
 
     def _create_initial_bond_dimensions(self):
         self.bonds = np.ndarray(self.num_variables - 1, dtype=int)
-        for k in range(1, self.num_variables):
-            if self.i[k] != self.j[k]:
+        for k in range(self.num_variables - 1):
+            if self.i[k + 1].shape[0] != self.j[k].shape[0]:
                 raise ValueError("Initial left and right indexes should have the same dimension")
-            self.bonds[k - 1] = len(self.i[k])
+            self.bonds[k - 1] = self.i[k + 1].shape[0]
 
     def _create_initial_arrays(self):
         self.p = np.ndarray(self.num_variables + 1, dtype=np.ndarray)
-        self.p[-1] = np.ones((1))
-        self.r = np.ones((1))
+        self.p[0] = np.array([[1]], dtype=np.float_)
+        self.p[-1] = np.array([[1]], dtype=np.float_)
+        self.r = np.array([[1]], dtype=np.float_)
 
         self._create_initial_index_sets()
         self._create_initial_bond_dimensions()
 
         self.b = np.ndarray(self.num_variables, dtype=np.ndarray)
+        self.b[0] = self.compute_single_site_tensor(0)
 
-        for i in range(self.num_variables):
-            self.b[i] = self.compute_single_site_tensor(i)
+        for i in range(1, self.num_variables):
+            cross_block = self.compute_cross_blocks(i - 1)
+            site_block = self.compute_single_site_tensor(i)
+            self.b[i] = ncon([cross_block, site_block], [[-1, 1], [1, -2, -3]])
 
     # =======================================================================================================
 
@@ -200,29 +206,152 @@ class ttrc(tt_interpolator):
 
     # =======================================================================================================
 
-    #   @nb.njit() -> Since we are not using ncon in this part, we can use numba
-    def initial_sweep_step(self, pos: int):
-        pass
+    def initial_sweep(self):
+        for pos in range(self.num_variables - 1, 0, -1):
+            rk_1 = self.b[pos].shape[0]
+            nk = self.b[pos].shape[1]
+            rk = self.b[pos].shape[2]
 
-        # TODO THIS PART HAS TO BE UPDATED TO CURRENT FORMAT (OUTDATED)
+            self.b[pos] = ncon([self.b[pos], self.r], [[-1, -2, 1], [1, -3]])
 
-        # rk_1 = self.b[pos].shape[0]
-        # nk = self.b[pos].shape[1]
-        # rk = self.b[pos].shape[2]
+            c = np.reshape(self.b[pos], (rk_1, nk * rk))
+            q_T, r_T = np.linalg.qr(c.T)
 
-        # self.b[pos] = ncon([self.b[pos], self.r], [[-1, -2, 1], [1, -3]])
-        # c = np.reshape(self.b[pos], (rk_1, nk * rk))
-        # q_t, r_t = np.linalg.qr(c)
-        # q = q_t.T, self.r = r_t.T
-        # q = np.matmul(q, self.p[pos])
-        # q = np.reshape(q, (rk_1, nk * rk))
-        # j_k = maxvol(q, complex=True, tol=self.tol, max_iter=1000)
+            q = q_T.T
+            self.r = r_T.T
 
-        # # Does p maintain the (1,1) shape of the first and last elements?
-        # self.p[pos - 1] = q[:, j_k]
+            self.b[pos] = np.reshape(q, (rk_1, nk, rk))
 
-        # # TODO Obtain the index values from the column index j_k
-        # return j_k
+            q = np.reshape(q, (rk_1 * nk, rk))
+
+            q = q @ self.p[pos + 1]
+
+            q = np.reshape(q, (rk_1, nk * rk))
+
+            _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1)
+
+            best_indices, self.j[pos - 1] = py_maxvol(A=q, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
+
+            self.p[pos] = q[:, best_indices]
+
+        self.b[0] = ncon([self.b[0], self.r], [[-1, -2, 1], [1, -3]])
+
+    def check_convergence(self, C: np.ndarray, site: int):
+        approx_superblock = ncon([self.b[site], self.b[site + 1]], [[-1, -2, 1], [1, -3, -4]])
+        err = np.linalg.norm(C - approx_superblock)
+        bound = self.trunctol * np.linalg.norm(C) / np.sqrt(self.num_variables - 1)
+        self.converged = err < bound
+
+    def left_right_update(self, site):
+
+        C = self.compute_superblock_tensor(site)
+
+        r_left = C.shape[0]
+        r_right = C.shape[3]
+
+        inv_prev_p = np.linalg.inv(self.p[site])
+        inv_post_p = np.linalg.inv(self.p[site + 2])
+
+        C = ncon(
+            [inv_prev_p, C, inv_post_p],
+            [[-1, 1], [1, -2, -3, 2], [2, -4]],
+        )
+
+        self.check_convergence(C, site)
+
+        C_reshaped = np.reshape(C, (r_left * len(self.grid[site]), len(self.grid[site + 1]) * r_right))
+
+        utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+
+        stemp_cumsum = np.cumsum(s_temp)
+        chitemp = min(np.argmax(stemp_cumsum > (1.0 - self.trunctol) * stemp_cumsum[-1]), self.max_bond)
+
+        utemp = utemp[:, :chitemp]
+        vtemp = vtemp[:chitemp, :]
+        stemp = np.diag(s_temp[:chitemp])
+
+        self.b[site] = np.reshape(utemp, (r_left, len(self.grid[site]), chitemp))
+        right_tensor = ncon([stemp, vtemp], [[-1, 1], [1, -2]])
+        self.b[site + 1] = np.reshape(right_tensor, (chitemp, len(self.grid[site + 1]), r_right))
+        self.bonds[site] = chitemp
+
+        maxvol_matrix = ncon([self.p[site], self.b[site]], [[-1, 1], [1, -2, -3]])
+        maxvol_matrix = np.reshape(maxvol_matrix, (r_left * len(self.grid[site]), chitemp))
+
+        I_k_1_expanded, _ = self._obtain_superblock_total_indices(site)
+
+        best_indices, self.i[site + 1] = py_maxvol(
+            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=self.tol, max_iters=1000
+        )
+
+        self.p[site + 1] = maxvol_matrix[best_indices]
+
+    def right_left_update(self, site):
+
+        C = self.compute_superblock_tensor(site)
+        r_left = C.shape[0]
+        r_right = C.shape[3]
+
+        inv_prev_p = np.linalg.inv(self.p[site])
+        inv_post_p = np.linalg.inv(self.p[site + 2])
+
+        C = ncon(
+            [inv_prev_p, C, inv_post_p],
+            [[-1, 1], [1, -2, -3, 2], [2, -4]],
+        )
+
+        self.check_convergence(C, site)
+
+        C_reshaped = np.reshape(C, (r_left * len(self.grid[site]), len(self.grid[site + 1]) * r_right))
+
+        utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+
+        stemp_cumsum = np.cumsum(s_temp)
+        chitemp = min(np.argmax(stemp_cumsum > (1 - self.trunctol) * stemp_cumsum[-1]), self.max_bond)
+
+        utemp = utemp[:, :chitemp]
+        vtemp = vtemp[:chitemp, :]
+        stemp = np.diag(s_temp[:chitemp])
+
+        left_tensor = ncon([utemp, stemp], [[-1, 1], [1, -2]])
+        self.b[site] = np.reshape(left_tensor, (r_left, len(self.grid[site]), chitemp))
+        self.b[site + 1] = np.reshape(vtemp, (chitemp, len(self.grid[site + 1]), r_right))
+
+        self.bonds[site] = chitemp
+
+        maxvol_matrix = ncon([self.b[site + 1], self.p[site + 2]], [[-1, -2, 1], [1, -3]])
+        maxvol_matrix = np.reshape(maxvol_matrix, (chitemp, len(self.grid[site + 1]) * r_right))
+
+        _, J_k_1_expanded = self._obtain_superblock_total_indices(site)
+        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
+
+        self.p[site + 1] = vtemp[:, best_indices]
+
+    def full_sweep(self):
+        for site in range(self.num_variables - 1):
+            self.left_right_update(site)
+
+        for site in range(self.num_variables - 2, -1, -1):
+            self.right_left_update(site)
+
+    def run(self):
+        self.converged = False
+        self.initial_sweep()
+        for sweep in range(self.sweeps):
+            print("Sweep", sweep + 1)
+            if self.converged:
+                print(f"COnverged at sweep {sweep}")
+                break
+            self.full_sweep()
+
+        mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
+
+        for site in range(self.num_variables - 1):
+            mps[2 * site] = self.b[site]
+            mps[2 * site + 1] = self.p[site + 1]
+
+        mps[-1] = self.b[-1]
+        return mps
 
 
 class greedy_cross(tt_interpolator):
@@ -393,3 +522,41 @@ class one_dim_function_interpolator:
             )
 
         return result[0]
+
+
+class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
+    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
+        super().__init__(func, interval, d, complex_function)
+
+    def interpolate(self, max_bond: int, pivot_finder_tol: float, sweeps: int) -> None:
+        self.interpolator = greedy_cross(
+            func=self.func_from_binary,
+            num_variables=self.d,
+            grid=self.grid,
+            tol=pivot_finder_tol,
+            max_bond=max_bond,
+            sweeps=sweeps,
+            is_f_complex=self.complex_f,
+        )
+        self.interpolation = self.interpolator.run()
+        self.interpolated = True
+
+
+class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
+    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
+        super().__init__(func, interval, d, complex_function)
+
+    def interpolate(self, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int) -> None:
+        self.interpolator = ttrc(
+            func=self.func_from_binary,
+            num_variables=self.d,
+            grid=self.grid,
+            maxvol_tol=maxvol_tol,
+            truncation_tol=truncation_tol,
+            sweeps=sweeps,
+            initial_bond_guess=max_bond,
+            is_f_complex=self.complex_f,
+        )
+
+        self.interpolation = self.interpolator.run()
+        self.interpolated = True

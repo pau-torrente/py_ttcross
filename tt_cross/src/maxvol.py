@@ -36,12 +36,12 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
     if len(A.shape) != 2:
         raise ValueError("A must be a matrix")
 
-    n, r = A.shape
-
-    if n < r:
+    if A.shape[0] < A.shape[1]:
         B = A.T.copy()
     else:
         B = A.copy()
+
+    n, r = B.shape
 
     # Maxvol works best if the initial pivots are somewhat good. On the paper they suggest using the
     # row pivots from Gaussian elimination, which are very closely related to the LU decomposition ones.
@@ -67,7 +67,6 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
     iter = 1
 
     # FInd the first swap
-    D = B.T
 
     i, j = divmod(np.argmax(np.abs(D)), r)
 
@@ -94,7 +93,7 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
     return index[:r].copy(), D
 
 
-def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
+def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100, top_k_index=-1):
     """
     Python implementation of 1-volume maximization.
 
@@ -105,16 +104,18 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     # some work on parameters
     if tol < 1:
         tol = 1.0
+    if A.shape[0] < A.shape[1]:
+        A = A.T
+        # return np.arange(N, dtype=np.int32), np.eye(N, dtype=A.dtype)
     N, r = A.shape
-    if N <= r:
-        return np.arange(N, dtype=np.int32), np.eye(N, dtype=A.dtype)
-    if top_k_index == -1 or top_k_index > N:
-        top_k_index = N
-    if top_k_index < r:
-        top_k_index = r
+
+    # if top_k_index == -1 or top_k_index > N:
+    #     top_k_index = N
+    # if top_k_index < r:
+    #     top_k_index = r
     # set auxiliary matrices and get corresponding *GETRF function
     # from lapack
-    B = np.copy(A[:top_k_index], order="F")
+    B = np.copy(A[:N], order="F")
     C = np.copy(A.T, order="F")
     H, ipiv, info = get_lapack_funcs("getrf", [B])(B, overwrite_a=1)
     # compute pivots from ipiv (result of *GETRF)
@@ -124,7 +125,6 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         index[i] = index[ipiv[i]]
         index[ipiv[i]] = tmp
 
-    print(index)
     # solve A = CH, H is in LU format
     B = H[:r]
     # It will be much faster to use *TRSM instead of *TRTRS
@@ -133,7 +133,7 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     trtrs(B, C, trans=1, lower=1, unitdiag=1, overwrite_b=1)
     # C has shape (r, N) -- it is stored transposed
     # find max value in C
-    i, j = divmod(abs(C[:, :top_k_index]).argmax(), top_k_index)
+    i, j = divmod(abs(C).argmax(), N)
     # set cgeru or zgeru for complex numbers and dger or sger for
     # float numbers
     try:
@@ -143,7 +143,6 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     # set number of iters to 0
     iters = 0
     # check if need to swap rows
-    print(C.T)
     while abs(C[i, j]) > tol and iters < max_iters:
         # add j to index and recompute C by SVM-formula
         index[i] = j
@@ -153,13 +152,16 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         alpha = -1.0 / C[i, j]
         ger(alpha, tmp_column, tmp_row, a=C, overwrite_a=1)
         iters += 1
-        i, j = divmod(abs(C[:, :top_k_index]).argmax(), top_k_index)
-    return index[:r].copy(), C.T
+        i, j = divmod(abs(C).argmax(), N)
+
+    best_index_state = full_index_set.copy()
+    best_index_state = full_index_set[index[:r]]
+    return index[:r], best_index_state
 
 
 # @nb.njit()  # -> This would benefit tremendously froom numba
 def greedy_pivot_finder(
-    A: np.ndarray, I: np.ndarray, I_1i: np.ndarray, J: np.ndarray, J_1j, max_iters=100, tol: float = 1e-10
+    A: np.ndarray, I: np.ndarray, I_1i: np.ndarray, J: np.ndarray, J_1j: np.ndarray, max_iters=100, tol: float = 1e-10
 ) -> tuple[int]:
     """Greedy pivot finder algorithm, which given a matrix A and the current cross aproximations obtained from rows I
     and columns J, finds a new pivot (i_new, j_new) that minimizes the difference between A and Approx.
