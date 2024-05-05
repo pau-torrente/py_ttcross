@@ -29,29 +29,81 @@ class tt_interpolator:
         self.bonds[0] = 1
         self.bonds[-1] = 1
 
-    def _obtain_superblock_total_indices(self, site: int):
-        # TODO Index I and J in here to remove redundancy
+    def _obtain_superblock_total_indices(self, site: int, compute_index_pos: bool = True):
+        # OLD VERSION WITHOUT OLD INDEX INDICES
+
+        # total_indices_left = []
+        # total_indices_right = []
+        # if site == 0:
+        #     for i in self.grid[site]:
+        #         total_indices_left.append([i])
+        # else:
+        #     for I_1 in self.i[site + 1 - 1]:
+        #         for i in self.grid[site]:
+        #             total_indices_left.append(np.concatenate((I_1, [i])))
+
+        # if site == self.num_variables - 2:
+        #     for j in self.grid[site]:
+        #         total_indices_right.append([j])
+        # else:
+        #     for J_1 in self.j[site + 1]:
+        #         for j in self.grid[site + 1]:
+        #             total_indices_right.append(np.concatenate(([j], J_1)))
+
+        # return np.array(total_indices_left), np.array(total_indices_right)
+
+        # TODO: np.where is very slow, stack overflow users suggest using hash maps to speed up the process
+
         total_indices_left = []
         total_indices_right = []
+
+        current_indices_left_pos = []
+        current_indices_right_pos = []
+
         if site == 0:
-            for i in self.grid[site]:
-                total_indices_left.append([i])
+            total_indices_left = np.array([self.grid[site].copy()], dtype=object).T
+            if compute_index_pos:
+                for current_best_pivot in self.i[site + 1]:
+                    current_indices_left_pos.append(
+                        np.where(np.all(total_indices_left == current_best_pivot, axis=1))[0][0]
+                    )
         else:
-            for I_1 in self.i[site + 1 - 1]:
-                for i in self.grid[site]:
-                    total_indices_left.append(np.concatenate((I_1, [i])))
+            arrL_repeated = np.repeat(self.i[site + 1 - 1], self.grid[site].shape[0], axis=0)
+            arrR_tiled = np.tile(self.grid[site], (1, self.i[site + 1 - 1].shape[0])).T
+
+            total_indices_left = np.concatenate((arrL_repeated, arrR_tiled), axis=1)
+
+            if compute_index_pos:
+                for current_best_pivot in self.i[site + 1]:
+                    current_indices_left_pos.append(
+                        np.where(np.all(total_indices_left == current_best_pivot, axis=1))[0][0]
+                    )
 
         if site == self.num_variables - 2:
-            for j in self.grid[site]:
-                total_indices_right.append([j])
+            total_indices_right = np.array([self.grid[site + 1].copy()], dtype=object).T
+
+            if compute_index_pos:
+                for current_best_pivot in self.j[site]:
+                    current_indices_right_pos.append(
+                        np.where(np.all(total_indices_right == current_best_pivot, axis=1))[0][0]
+                    )
+
         else:
-            for J_1 in self.j[site + 1]:
-                for j in self.grid[site + 1]:
-                    total_indices_right.append(np.concatenate(([j], J_1)))
+            arrL_tiled = np.tile(self.grid[site + 1], (1, self.j[site + 1].shape[0])).T
+            arrR_repeated = np.repeat(self.j[site + 1], self.grid[site + 1].shape[0], axis=0)
 
-        return np.array(total_indices_left), np.array(total_indices_right)
+            total_indices_right = np.concatenate((arrL_tiled, arrR_repeated), axis=1)
 
-    # TODO Loops are probably not the best idea here, but we can optimize them later (use numba here)
+            if compute_index_pos:
+                for current_best_pivot in self.j[site]:
+                    current_indices_right_pos.append(
+                        np.where(np.all(total_indices_right == current_best_pivot, axis=1))[0][0]
+                    )
+
+        if not compute_index_pos:
+            return total_indices_left, total_indices_right
+
+        return total_indices_left, total_indices_right, current_indices_left_pos, current_indices_right_pos
 
     def compute_single_site_tensor(self, site):
         tensor = np.ndarray((len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.j[site])), dtype=self.f_type)
@@ -228,7 +280,7 @@ class ttrc(tt_interpolator):
 
             q = np.reshape(q, (rk_1, nk * rk))
 
-            _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1)
+            _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1, compute_index_pos=False)
 
             best_indices, self.j[pos - 1] = py_maxvol(A=q, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
 
@@ -273,12 +325,13 @@ class ttrc(tt_interpolator):
         self.b[site] = np.reshape(utemp, (r_left, len(self.grid[site]), chitemp))
         right_tensor = ncon([stemp, vtemp], [[-1, 1], [1, -2]])
         self.b[site + 1] = np.reshape(right_tensor, (chitemp, len(self.grid[site + 1]), r_right))
+
         self.bonds[site] = chitemp
 
         maxvol_matrix = ncon([self.p[site], self.b[site]], [[-1, 1], [1, -2, -3]])
         maxvol_matrix = np.reshape(maxvol_matrix, (r_left * len(self.grid[site]), chitemp))
 
-        I_k_1_expanded, _ = self._obtain_superblock_total_indices(site)
+        I_k_1_expanded, _ = self._obtain_superblock_total_indices(site, compute_index_pos=False)
 
         best_indices, self.i[site + 1] = py_maxvol(
             A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=self.tol, max_iters=1000
@@ -322,7 +375,7 @@ class ttrc(tt_interpolator):
         maxvol_matrix = ncon([self.b[site + 1], self.p[site + 2]], [[-1, -2, 1], [1, -3]])
         maxvol_matrix = np.reshape(maxvol_matrix, (chitemp, len(self.grid[site + 1]) * r_right))
 
-        _, J_k_1_expanded = self._obtain_superblock_total_indices(site)
+        _, J_k_1_expanded = self._obtain_superblock_total_indices(site, compute_index_pos=False)
         best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
 
         self.p[site + 1] = vtemp[:, best_indices]
@@ -345,12 +398,6 @@ class ttrc(tt_interpolator):
             self.full_sweep()
 
         mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
-
-        # for site in range(self.num_variables - 1):
-        #     mps[2 * site] = self.b[site]
-        #     mps[2 * site + 1] = self.p[site + 1]
-
-        # mps[-1] = self.b[-1]
 
         for site in range(self.num_variables - 1):
             mps[2 * site] = self.compute_single_site_tensor(site)
@@ -423,15 +470,16 @@ class greedy_cross(tt_interpolator):
             ),
         )
 
-        I_1i, J_1j = self._obtain_superblock_total_indices(site)
+        I_1i, J_1j, current_I_pos, current_J_pos = self._obtain_superblock_total_indices(site=site)
         new_I, new_J, rk, _, error = greedy_pivot_finder(
             superblock_tensor,
-            self.i[site + 1].copy(),
             I_1i,
-            self.j[site].copy(),
+            current_I_pos,
             J_1j,
+            current_J_pos,
+            tol=self.tol,
         )
-        # return new_I, new_J, rk
+
         self.error.append(error)
         self.i[site + 1] = new_I
         self.j[site] = new_J
@@ -460,109 +508,3 @@ class greedy_cross(tt_interpolator):
         mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
 
         return mps
-
-
-class one_dim_function_interpolator:
-    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
-        self.d = d
-        n = 2**d
-        self.h = (interval[1] - interval[0]) / n
-        self.interval = interval
-        self.grid = np.array(
-            [[0, 1] for _ in range(self.d)],
-            dtype=np.float64,
-        )
-        self.complex_f = complex_function
-        self.func = func
-        self.interpolated = False
-
-    def x(self, binary_i: np.ndarray) -> np.float_:
-        i = np.sum([ip * 2**index for index, ip in enumerate(np.flip(binary_i))])
-        return (i + 0.5) * self.h + self.interval[0]
-
-    def func_from_binary(self, binary_i: np.ndarray) -> np.float_:
-        return self.func(self.x(binary_i))
-
-    def interpolate(self, max_bond: int, tol: float, sweeps: int) -> None:
-        self.interpolator = greedy_cross(
-            func=self.func_from_binary,
-            num_variables=self.d,
-            grid=self.grid,
-            tol=tol,
-            max_bond=max_bond,
-            sweeps=sweeps,
-            is_f_complex=self.complex_f,
-        )
-        self.interpolation = self.interpolator.run()
-        self.interpolated = True
-
-    def _eval_contraction_tensors(self, x: np.float_) -> np.ndarray:
-        i = int(np.round((x - self.interval[0]) / self.h - 0.5))
-        bin_i = np.array([int(ip) for ip in np.binary_repr(i, width=self.d)], dtype=np.int_)
-        return np.array([[1, 0] if bin_i[site] == 0 else [0, 1] for site in range(self.d)], dtype=np.int_)
-
-    def eval(self, x: np.float_) -> np.float_:
-        if not self.interpolated:
-            raise ValueError("The function has not been interpolated yet")
-
-        interpolation_tensors = self.interpolation.copy()
-        contr_tensors = self._eval_contraction_tensors(x)
-
-        result = interpolation_tensors[0][0]
-        result = ncon(
-            [contr_tensors[0], result],
-            [[1], [1, -1]],
-        )
-
-        for i in range(1, self.d):
-            result = ncon(
-                [result, interpolation_tensors[2 * i - 1]],
-                [[1], [1, -1]],
-            )
-
-            result = ncon([result, interpolation_tensors[2 * i]], [[1], [1, -1, -2]])
-
-            result = ncon(
-                [contr_tensors[i], result],
-                [[1], [1, -1]],
-            )
-
-        return result[0]
-
-
-class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
-    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
-        super().__init__(func, interval, d, complex_function)
-
-    def interpolate(self, max_bond: int, pivot_finder_tol: float, sweeps: int) -> None:
-        self.interpolator = greedy_cross(
-            func=self.func_from_binary,
-            num_variables=self.d,
-            grid=self.grid,
-            tol=pivot_finder_tol,
-            max_bond=max_bond,
-            sweeps=sweeps,
-            is_f_complex=self.complex_f,
-        )
-        self.interpolation = self.interpolator.run()
-        self.interpolated = True
-
-
-class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
-    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
-        super().__init__(func, interval, d, complex_function)
-
-    def interpolate(self, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int) -> None:
-        self.interpolator = ttrc(
-            func=self.func_from_binary,
-            num_variables=self.d,
-            grid=self.grid,
-            maxvol_tol=maxvol_tol,
-            truncation_tol=truncation_tol,
-            sweeps=sweeps,
-            initial_bond_guess=max_bond,
-            is_f_complex=self.complex_f,
-        )
-
-        self.interpolation = self.interpolator.run()
-        self.interpolated = True
