@@ -190,27 +190,9 @@ def greedy_pivot_finder(
     Returns:
     """
 
-    # OLD IMPLEMENTATION
-
-    # old_is = []
-    # for i in I:
-    #     for index, i_ext in enumerate(I_1i):
-    #         if np.array_equal(i, i_ext):
-    #             old_is.append(index)
-    #             break
-
-    # old_js = []
-    # for j in J:
-    #     for index, j_ext in enumerate(J_1j):
-    #         if np.array_equal(j, j_ext):
-    #             old_js.append(index)
-    #             break
-
     square_core = A[current_I_pos][:, current_J_pos]
     Approx = A[:, current_J_pos] @ np.linalg.inv(square_core) @ A[current_I_pos]
 
-    # This can be optimized to not have to evaluate so many elements
-    # TODO THIS ENDS UP FINDING THE PIVOT ALREADY IN THE CROSS -> IN THIS CASE, WE SHOULD NOT INCREASE THE RANK
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
 
     if i_new in current_I_pos or j_new in current_J_pos or np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:

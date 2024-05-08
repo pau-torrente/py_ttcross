@@ -1,11 +1,43 @@
 import numpy as np
-import numba as nb
-from .maxvol import greedy_pivot_finder, maxvol, py_maxvol
+from .maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
 
 
 class tt_interpolator:
+    """
+    Class representing a general tensor train interpolator. It only incorporates the methods related to obtaining
+    the total indices I_{k-1}⊗i_k and J_{k+1}⊗j_{k+1} for a given site and 3 methods to compute single-site tensors,
+    2-site superblock tensors (2-site DMRG style) and the inverse of the cross block for a given site. The class is
+    intended to be inherited specific implementations of the interpolator which contain the methods related to
+    updating the index sets.
+
+    Some of the most confusing notation used is the following:
+
+    - self.i[k] = {1, i_1^s, i_2^s, ..., i_k^s}, s = 1, ..., r_k
+
+    - self.j[k] = {i_{k+1}^s, i_{k+2}^s, ..., i_N^s, 1}, s = 1, ..., r_k
+        (The 1 at the beginning of self.i[k] and end of self.j[k] are dummy indices which are there just for
+        simplicity when contracting the tensors)
+
+    - total_indices_left = self.i[k-1]⊗i_k
+
+    - total_indices_right = i_{k+1}⊗self.j[k+1]
+        (When doing this outer products, we always take the indices from self.i and self.j first and then the ones
+        coming from i_k and i_{k+1} are the ones that get tiled)
+
+    Args:
+        - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
+        and returns a float or complex number.
+        - num_variables (int): The number of variables of the grid on which the function is defined.
+        - grid (np.ndarray): The grid on which the function is defined. It must be a numpy array of len = num_variables.
+            The number of points in each dimension of the grid can be different.
+        - tol (float): Tolerance for the pivot finding algorithm.
+        - sweeps (int): Number of sweeps to perform.
+        - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
+
+    """
+
     def __init__(
         self,
         func: FunctionType,
@@ -14,7 +46,7 @@ class tt_interpolator:
         tol: float,
         sweeps: int,
         is_f_complex=False,
-    ):
+    ) -> None:
         self.func = func
         if len(grid) != num_variables:
             raise ValueError("The grid must have the same number of dimensions as the number of variables")
@@ -29,30 +61,55 @@ class tt_interpolator:
         self.bonds[0] = 1
         self.bonds[-1] = 1
 
-    def _obtain_superblock_total_indices(self, site: int, compute_index_pos: bool = True):
-        # OLD VERSION WITHOUT OLD INDEX INDICES
+    def _obtain_superblock_total_indices(
+        self, site: int, compute_index_pos: bool = True
+    ) -> tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, list, list]:
+        """Obtain the set of all possible indices I_{k-1}⊗i_k and J_{k+1}⊗j_{k+1} for the given site k = site. A part
+        from this subsets, it can also return the position of the current best indices I_{k} and J_{k} in these sets of
+        total possible subindices.
 
-        # total_indices_left = []
-        # total_indices_right = []
-        # if site == 0:
-        #     for i in self.grid[site]:
-        #         total_indices_left.append([i])
-        # else:
-        #     for I_1 in self.i[site + 1 - 1]:
-        #         for i in self.grid[site]:
-        #             total_indices_left.append(np.concatenate((I_1, [i])))
+        Example:
+        I_{k-1} = [[1, 2],
+                   [3, 4],
+                   [5, 6]]
 
-        # if site == self.num_variables - 2:
-        #     for j in self.grid[site]:
-        #         total_indices_right.append([j])
-        # else:
-        #     for J_1 in self.j[site + 1]:
-        #         for j in self.grid[site + 1]:
-        #             total_indices_right.append(np.concatenate(([j], J_1)))
+        i_k = [[7],
+               [8]]
 
-        # return np.array(total_indices_left), np.array(total_indices_right)
+        total_indices_left = [[1, 2, 7],
+                              [1, 2, 8],
+                              [3, 4, 7],
+                              [3, 4, 8],
+                              [5, 6, 7],
+                              [5, 6, 8]]
 
-        # TODO: np.where is very slow, stack overflow users suggest using hash maps to speed up the process
+        =============================================================
+
+        J_{k+1} = [[9, 10],
+                   [11, 12],
+                   [13, 14]]
+
+        j_{k+1} = [[15],
+                   [16]]
+
+        total_indices_right = [[15, 9, 10],
+                               [16, 9, 10],
+                               [15, 11, 12],
+                               [16, 11, 12],
+                               [15, 13, 14],
+                               [16, 13, 14]]
+
+
+        Args:
+            site (int): The left site of the superblock.
+            compute_index_pos (bool, optional): Whether to compute also the position of the current best sets of indices
+            . Defaults to True.
+
+        Returns:
+            tuple[np.ndarray, np.ndarray] | tuple[np.ndarray, np.ndarray, list, list]: The total indices left and right.
+            If compute_index_pos is True, the current best indices positions are also returned.
+        """
+        # TODO: If np.where is too slow, stack overflow users suggest using hash maps to speed up the process
 
         total_indices_left = []
         total_indices_right = []
@@ -100,12 +157,24 @@ class tt_interpolator:
                         np.where(np.all(total_indices_right == current_best_pivot, axis=1))[0][0]
                     )
 
-        if not compute_index_pos:
-            return total_indices_left, total_indices_right
+        return (
+            total_indices_left,
+            total_indices_right if compute_index_pos else total_indices_left,
+            total_indices_right,
+            current_indices_left_pos,
+            current_indices_right_pos,
+        )
 
-        return total_indices_left, total_indices_right, current_indices_left_pos, current_indices_right_pos
+    def compute_single_site_tensor(self, site: int) -> np.ndarray:
+        """Method that using the index sets stored in the self.i and self.j variables, computes the single-site tensor
+        A(I_{k-1}, i_k, J_{k}) used to construct the tensor train.
 
-    def compute_single_site_tensor(self, site):
+        Args:
+            site (int): The site for which the single-site tensor is computed.
+
+        Returns:
+            np.ndarray: The 3-legged tensor corresponding to the tensor at site "site" in the tensor train.
+        """
         tensor = np.ndarray((len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.j[site])), dtype=self.f_type)
 
         for s, left in enumerate(self.i[site + 1 - 1]):
@@ -123,7 +192,22 @@ class tt_interpolator:
 
         return tensor
 
-    def compute_cross_blocks(self, site):
+    def compute_cross_blocks(self, site: int) -> np.ndarray:
+        """Method that using the index sets stored in the self.i and self.j variables compute the square cross block
+        tensors that go in between the 3-leged ones in the tensor train to form the ttcross approximation. The
+        tensors are computed as [A(I_{k}, J_{k})]^{-1}.
+
+        Args:
+            site (int): The site in the tensor train corresponding to the physical site which lies at the left of this
+            inverse cross block.
+
+        Raises:
+            ValueError: If the left and right indexes have different dimensions, which results in a non-square block
+            which cannot be inverted.
+
+        Returns:
+            np.ndarray: The 2-legged tensor that is the inverse of the cross block tensor.
+        """
         if len(self.i[site + 1]) != len(self.j[site]):
             raise ValueError("The left and right indexes must have the same dimension")
 
@@ -138,7 +222,16 @@ class tt_interpolator:
         return inv_block
 
     # TODO Loops are probably not the best idea here, but we can optimize them later (use numba here)
-    def compute_superblock_tensor(self, site):
+    def compute_superblock_tensor(self, site: int) -> np.ndarray:
+        """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
+        A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
+
+        Args:
+            site (int): The site of the left physical leg of the superblock tensor.
+
+        Returns:
+            np.ndarray: The output 4-legged tensor corresponding to the superblock tensor.
+        """
         tensor = np.ndarray(
             (len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.grid[site + 1]), len(self.j[site + 1])),
             dtype=self.f_type,
@@ -162,6 +255,55 @@ class tt_interpolator:
 
 
 class ttrc(tt_interpolator):
+    """Class representing the ttrc interpolator presented in:
+    D. Savostyanov and I. Oseledets, "Fast adaptive interpolation of multi-dimensional arrays in tensor train format,"
+    The 2011 International Workshop on Multidimensional (nD) Systems, Poitiers, France, 2011, pp. 1-8,
+    doi: 10.1109/nDS.2011.6076873.
+    Starting from a large amount of pivots at each site, the algorithm iteratively improves on the selected pivots
+    using the maxvol algorithm presented in:
+    https://www.researchgate.net/publication/251735015_How_to_Find_a_Good_Submatrix
+    Which reduces the number of pivots adaptatively through SVD decompositions.
+
+    In terms of notation, apart from what is clarified in the tt_interpolator parent class,the following extra
+    notation is used:
+    - self.p[k] = Square matrices obtained after the SVD, QR and maxvol proceses. They are constructed on left to right
+    sweeps by selectig the best rows obtained from the maxvol from the left matrix obtained from the orthogonalization
+    either by SVD or QR. On right to left sweeps, the best columns are selected from the right matrix outpu of the
+    orthogonalization. Their role in the algorithm can be better understood from the paper.
+
+    - self.r = The left matrix obtained from (QR).T on the first warm-up right to left sweep. For more details on its
+    rol, refer to the paper.
+
+    - self.b[k] = The 3-legged tensors product of the SVD procedure on the superblock tensor. They are not the tensors
+    that form the ttcross approximation of the function, but theintermediate tensors used to check convergence from
+    one swipe to the other before computing the new SVD decomposition using the criteria:
+    ||C - A|| < tol * ||C|| / sqrt(N-1)
+
+    Args:
+        - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
+        and returns a float or complex number.
+
+        - num_variables (int): The number of variables of the grid on which the function is defined.
+
+        - grid (np.ndarray): The grid on which the function is defined. It must be a numpy array of len = num_variables.
+            The number of points in each dimension of the grid can be different.
+
+        - max_tol (float): Tolerance for the maxvol algorithm. It is used as 1 + max_tol, as the maxvol algorithm takes
+        all the values of an internally defined matrix to values as close as possible to 1.
+
+        - truncation_tol (float): Tolerance for the truncation of the SVD decompositions. The number of singular value
+        kept is the number of singular values that add up to a fraction of 1 - truncation_tol of the total sum of
+        singular values.
+
+        - sweeps (int): Number of sweeps to perform.
+
+        - initial_bond_guess (int): Initial bond dimension guess. It is the size of all the initial index sets I and J
+        stored in the self.i and self.j variables. The selected initial_bond_guess pivots ate each site are selected
+        at random, but maintaining the nestedness left and right in all the sites.
+
+        - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
+    """
+
     def __init__(
         self,
         func: FunctionType,
@@ -188,6 +330,21 @@ class ttrc(tt_interpolator):
         self.trunctol = truncation_tol
 
     def _create_initial_index_sets(self):
+        """Creates the initial index sets for all the sites in the tensor train by taking pivots at random while
+        maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
+        follows the criteria:
+         1. At the current site, take min(len(grid[site]), max_bond) pivots.
+         2. Compare if this number of pivots is smaller/bigger than the number of pivots at the left/right site,
+            depending on if we are working with the I or J indices, respectively.
+         3. If it is smaller, expand the currently selected points by repeating them until they reach the same
+            dimension as the left/right index set.
+         4. If it is bigger, repeat the left/right index set until it reaches the same dimension as the currently
+            selected points.
+
+        In this way, the nestedness of the index sets is maintained, the pivots are not repeated (which is fatal for
+        the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
+        site without ever exceeding the maximum bond dimension.
+        """
         self.i = np.ndarray(self.num_variables + 1, dtype=object)
         self.i[0] = np.array([[1]])
         self.i[1] = np.array(
@@ -229,6 +386,14 @@ class ttrc(tt_interpolator):
                 self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
 
     def _create_initial_bond_dimensions(self):
+        """Method that initializes the bond dimensions for all the sites in the tensor train. The bond dimensions are
+        computed from the sizes of the index sets I and J at each site. The bond dimensions are stored in the
+        self.bonds variable.
+
+        Raises:
+            ValueError: If the initial left and right index sets have different dimensions, which would result in non
+            square blocks that cannot be inverted.
+        """
         self.bonds = np.ndarray(self.num_variables - 1, dtype=int)
         for k in range(self.num_variables - 1):
             if self.i[k + 1].shape[0] != self.j[k].shape[0]:
@@ -236,6 +401,14 @@ class ttrc(tt_interpolator):
             self.bonds[k - 1] = self.i[k + 1].shape[0]
 
     def _create_initial_arrays(self):
+        """Method that creates all the initial tensors needed by the algorithm as described in the original ttrc paper.
+        This includes:
+        - The initial P matrix array, as well as initializing the first and las ones to identity matrices os shape (1,1).
+        - The initial R matrix.
+        - The initial index sets I and J.
+        - The initial bond dimensions.
+        - The initial crude approximation to A, built from the B tensors computed from the randomly chosen pivots.
+        """
         self.p = np.ndarray(self.num_variables + 1, dtype=np.ndarray)
         self.p[0] = np.array([[1]], dtype=np.float_)
         self.p[-1] = np.array([[1]], dtype=np.float_)
@@ -252,13 +425,17 @@ class ttrc(tt_interpolator):
             site_block = self.compute_single_site_tensor(i)
             self.b[i] = ncon([cross_block, site_block], [[-1, 1], [1, -2, -3]])
 
-    # =======================================================================================================
-
-    # TODO FINISH UPDATE AND SWEEP METHODS IN TTRC WITH FULL MAXVOL
-
-    # =======================================================================================================
-
     def initial_sweep(self):
+        """Method that performs the initial warm-up sweep from right to left following step by step the procedure
+        described in the original ttrc paper. The main steps are:
+        1. Contract to the current tensor B at site k the matrix R from thr right.
+        2. Perform a QR decomposition on the resulting tensor and transpose the whole thing such that the matrix with
+        orthogonal columns is on the right and the upper diagonal on the left, the latter updating the R matrix.
+        3. Contract into the Q matrix the P matrix from the right. and apply the Maxvol to it.
+        4. Update the random index set J at site k-1 with the selected pivots by the Maxvol, and update the P matrix
+            at site k-1 with the selected columns from the Q matrix (There's a typo on the paper, where they say
+            P_{k-1} = Q[:, I_k], but it should be P_{k-1} = Q[:, J_k]).
+        """
         for pos in range(self.num_variables - 1, 0, -1):
             rk_1 = self.b[pos].shape[0]
             nk = self.b[pos].shape[1]
@@ -282,19 +459,43 @@ class ttrc(tt_interpolator):
 
             _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1, compute_index_pos=False)
 
-            best_indices, self.j[pos - 1] = py_maxvol(A=q, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
+            best_indices, self.j[pos - 1] = py_maxvol(
+                A=q, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000
+            )
 
             self.p[pos] = q[:, best_indices]
 
         self.b[0] = ncon([self.b[0], self.r], [[-1, -2, 1], [1, -3]])
 
     def check_convergence(self, C: np.ndarray, site: int):
+        """Checks if the algorithm has converged by comparing the current superblock tensor C with the approximation
+        obtained in the previous sweep. The convergence criteria is:
+        ||C - B_{site} * B_{site+1}|| < tol * ||C|| / sqrt(N-1)
+
+        Args:
+            C (np.ndarray): The current superblock tensor A(I_{k-1}, i_k, i_{k+1}, J_{k+1}).
+            site (int): The site of the left physical leg of the superblock.
+        """
         approx_superblock = ncon([self.b[site], self.b[site + 1]], [[-1, -2, 1], [1, -3, -4]])
         err = np.linalg.norm(C - approx_superblock)
         bound = self.trunctol * np.linalg.norm(C) / np.sqrt(self.num_variables - 1)
         self.converged = err < bound
 
     def left_right_update(self, site):
+        """Method that performs a singe update on a left to right sweep. The main steps follow the exact same structure
+        as what is described in the original ttrc paper, and are the following:
+        1. Compute the superblck tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k.
+        2. Contract the inverses of the P matrices from the left and right into the superblock tensor C. This is to
+        be able to compare with the B matrices from the previous sweep.
+        3. Check the convergence using the check_convergence method.
+        4. Perform an SVD decomposition on the reshaped superblock tensor C and update the B matrices at site k and k+1.
+        5. Recontract the P matrix from the left (to update the bond dimension it is not needed) and perfrom the maxvol
+        algorithm to update the I index set at site k.
+        6. Update the P matrix at site k+1 with the selected ows from the left matrix of the SVD.
+
+        Args:
+            site (int): The site corresponding to the left physical leg of the superblock tensor.
+        """
 
         C = self.compute_superblock_tensor(site)
 
@@ -334,12 +535,27 @@ class ttrc(tt_interpolator):
         I_k_1_expanded, _ = self._obtain_superblock_total_indices(site, compute_index_pos=False)
 
         best_indices, self.i[site + 1] = py_maxvol(
-            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=self.tol, max_iters=1000
+            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=1 + self.tol, max_iters=1000
         )
 
         self.p[site + 1] = maxvol_matrix[best_indices]
 
     def right_left_update(self, site):
+        """Method that performs a singe update on a right to left sweep. The main steps follow the exact same structure
+        as what is described in the original ttrc paper for the left to right sweep, but in reverse, and are the
+        following:
+        1. Compute the superblck tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k.
+        2. Contract the inverses of the P matrices from the left and right into the superblock tensor C. This is to
+        be able to compare with the B matrices from the previous sweep.
+        3. Check the convergence using the check_convergence method.
+        4. Perform an SVD decomposition on the reshaped superblock tensor C and update the B matrices at site k and k+1.
+        5. Recontract the P matrix from the right (to update the bond dimension it is not needed) and perfrom the maxvol
+        algorithm to update the J index set at site k + 1.
+        6. Update the P matrix at site k+1 with the selected columns from the right matrix of the SVD.
+
+        Args:
+            site (int): The site corresponding to the left physical leg of the superblock tensor.
+        """
 
         C = self.compute_superblock_tensor(site)
         r_left = C.shape[0]
@@ -376,11 +592,12 @@ class ttrc(tt_interpolator):
         maxvol_matrix = np.reshape(maxvol_matrix, (chitemp, len(self.grid[site + 1]) * r_right))
 
         _, J_k_1_expanded = self._obtain_superblock_total_indices(site, compute_index_pos=False)
-        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=self.tol, max_iters=1000)
+        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000)
 
         self.p[site + 1] = vtemp[:, best_indices]
 
     def full_sweep(self):
+        """Perform a full left to right and right to left sweep in the tensor train."""
         for site in range(self.num_variables - 1):
             self.left_right_update(site)
 
@@ -388,6 +605,17 @@ class ttrc(tt_interpolator):
             self.right_left_update(site)
 
     def run(self):
+        """Run the full algorithm, performing the initial sweep and then the full sweeps until convergence or the
+        maximum number of sweeps is reached. After the index sets are updated, the final tensor train built using the
+        computed index set:
+
+        A(i1, i2, ..., iN) ≈
+          A(i1, J1) * [A(I1, J1)]^{-1} * A(I1, i2, J2) * [A(I2, J2]^{-1} * ... * [A(I{N-1}, J{N-1)]^{-1} * A(I{N-1}, iN)
+
+        Returns:
+            np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
+            the function at all the grid points.
+        """
         self.converged = False
         self.initial_sweep()
         for sweep in range(self.sweeps):
