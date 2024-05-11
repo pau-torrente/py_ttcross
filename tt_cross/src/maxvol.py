@@ -97,11 +97,14 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
 
 def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100):
     """
-    Python implementation of 1-volume maximization.
+    Maxvol algorithm implemented following the original paper:
+    Goreinov, Sergei & Oseledets, Ivan & Savostyanov, D. & Tyrtyshnikov, E. & Zamarashkin, Nickolai. (2010).
+    "How to Find a Good Submatrix". Matrix Methods: Theory, Algorithms and Applications. 10.1142/9789812836021_0015.
 
-    See Also
-    --------
-    maxvol
+    To improve the performance of the algorithm, the function starts off from the pivots of the LU decomposition of the
+    input matrix A. In terms of speed, the algorithm uses the BLAS and LAPACK libraries to perform the operations on the
+    matrices. The algorithm will return the indices of the rows of A that form a submatrix with the largest volume, and
+    the best set of indices from the original full index set.
     """
     # some work on parameters
     if tol < 1:
@@ -153,12 +156,11 @@ def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100
         iters += 1
         i, j = divmod(abs(C).argmax(), N)
 
-    best_index_state = full_index_set.copy()
-    best_index_state = full_index_set[index[:r]]
-    return index[:r], best_index_state
+    best_index_set = full_index_set.copy()
+    best_index_set = full_index_set[index[:r]]
+    return index[:r], best_index_set
 
 
-# @nb.njit()  # -> This would benefit tremendously froom numba
 def greedy_pivot_finder(
     A: np.ndarray,
     I_1i: np.ndarray,
@@ -167,40 +169,50 @@ def greedy_pivot_finder(
     current_J_pos: list,
     tol: float = 1e-10,
 ) -> tuple[np.ndarray, np.ndarray, int, int, float]:
-    """Greedy pivot finder algorithm, which given a matrix A and the current cross aproximations obtained from rows I
-    and columns J, finds a new pivot (i_new, j_new) that minimizes the difference between A and Approx.
+    """Greedy pivot finder algorithm. Given a matrix A obtained from evalutaing a function in the points
+    (I_1i = I_{k-1}⊗i_k, J_1j = J_{k+1}⊗i_{k+1}) the algorithm updates the current cross approximation given by the
+    pivots in the sets I and J, which lie in the positions current_I_pos and current_J_pos in the sets I_1i and J_1j.
+    To do so, it adds to the approximation the pivot (i_new, j_new) that minimizes the difference between A and the
+    approximation, taking advatnage of the interpolation properties of the cross approximation. This property guarantees
+    that upon adding a pivot to the cross, the error in the added row and column will be zero. By running the algorithm
+    iteratively, we can find the best cross approximation for the given matrix A in a greedy manner.
 
     Args:
-        A (np.ndarray): The input matrix of shape (n, r) which we want to approximate.
+        - A (np.ndarray): The input matrix of shape (n, r) which we want to approximate.
 
-        I_1i (np.ndarray): All the rows of A that form the cross approximation, in terms of sets of indices of all the
-        k-1 previous sites times all the values for the current site.
+        - I_1i (np.ndarray): All the rows of A that form the cross approximation, as the expanded set I_{k-1}⊗i_k
 
-        current_I_pos (np.ndarray): The current best rows of A, as in the position of the current best sets of indices
-        I in the array of all possible sets of indices I_1i.
+        - Icurrent_I_pos (np.ndarray): The current best rows of A, as in the position of the current best sets of indices
+        I in the array of all possible sets of indices I_1i = I_{k-1}⊗i_k.
 
-        J_1j (np.ndarray): The current best columns of A that form the cross approximation, in terms of sets of indices of all the
-        sites from k+2 rightwards, time all the values for the current (site + 1).
+        - IJ_1j (np.ndarray): All the columns of A that form the cross approximation, as the expanded set J_{k+1}⊗i_{k+1}.
 
-        current_J_pos (np.ndarray): The current best columns of A, as in the position of the best sets of indices J
-        in the array of all possible sets of indices J_1j.
+        - Icurrent_J_pos (np.ndarray): The current best columns of A, as in the position of the best sets of indices J
+        in the array of all possible sets of indices J_1j = J_{k+1}⊗i_{k+1}.
 
-        tol (float): The tolerance that the algorithm will use to check for convergence of the approximation.
+        - Itol (float): The tolerance to check for convergence. Once the difference between A and the approximation in the
+        position (i_new, j_new) is smaller than tol, the algorithm will stop.
 
     Returns:
+        - tuple[np.ndarray, np.ndarray, int, int, float]: The new sets of indices I and J, the number of rows and columns
+        in the new sets, and the error in the approximation, computed as the sum of all the elements in |A - Approx|.
     """
-
+    # Compute first the cross approximation of A with the current sets of indices
     square_core = A[current_I_pos][:, current_J_pos]
     Approx = A[:, current_J_pos] @ np.linalg.inv(square_core) @ A[current_I_pos]
 
+    # Find the pivot that maximizes the difference between A and the approximation
     i_new, j_new = divmod(np.argmax(np.abs(A - Approx)), A.shape[1])
 
+    # If the pivot is already in the current sets of indices, or the difference between A and the approximation in this
+    # position is smaller than the tolerance, return the current sets of indices and the error in the approximation
     if i_new in current_I_pos or j_new in current_J_pos or np.abs(A[i_new, j_new] - Approx[i_new, j_new]) < tol:
         I = I_1i[current_I_pos]
         J = J_1j[current_J_pos]
 
         return I, J, len(I), len(J), np.sum(np.abs(A - Approx))
 
+    # Otherwise, add the pivot to the sets of indices and update the approximation
     new_I_pos = current_I_pos + [i_new]
     new_J_pos = current_J_pos + [j_new]
 
