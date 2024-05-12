@@ -1,7 +1,10 @@
+from tabnanny import check
 import numpy as np
 from .maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
+import warnings
+import time
 
 
 class tt_interpolator:
@@ -172,14 +175,10 @@ class tt_interpolator:
                     current_indices_right_pos.append(
                         np.where(np.all(total_indices_right == current_best_pivot, axis=1))[0][0]
                     )
-
-        return (
-            total_indices_left,
-            total_indices_right if compute_index_pos else total_indices_left,
-            total_indices_right,
-            current_indices_left_pos,
-            current_indices_right_pos,
-        )
+        if compute_index_pos:
+            return total_indices_left, total_indices_right, current_indices_left_pos, current_indices_right_pos
+        else:
+            return total_indices_left, total_indices_right
 
     def compute_single_site_tensor(self, site: int) -> np.ndarray:
         """Method that using the index sets stored in the self.i and self.j variables, computes the single-site tensor
@@ -203,11 +202,11 @@ class tt_interpolator:
                     # respectively.
 
                     if site == 0:
-                        point = np.concatenate(([i], right))
+                        point = np.concatenate(([i], right)).astype(float)
                     elif site == self.num_variables - 1:
-                        point = np.concatenate((left, [i]))
+                        point = np.concatenate((left, [i])).astype(float)
                     else:
-                        point = np.concatenate((left, [i], right))
+                        point = np.concatenate((left, [i], right)).astype(float)
 
                     tensor[s, m, k] = self.func(point)
 
@@ -238,7 +237,7 @@ class tt_interpolator:
 
         for s, left in enumerate(self.i[site + 1]):
             for k, right in enumerate(self.j[site]):
-                block[s, k] = self.func(np.concatenate((left, right)))
+                block[s, k] = self.func(np.concatenate((left, right)).astype(float))
 
         inv_block = np.linalg.inv(block)
 
@@ -270,11 +269,11 @@ class tt_interpolator:
                         # respectively.
 
                         if site == 0:
-                            point = np.concatenate(([i], [j], right))
+                            point = np.concatenate(([i], [j], right)).astype(float)
                         elif site == self.num_variables - 1:
-                            point = np.concatenate((left, [i], [j]))
+                            point = np.concatenate((left, [i], [j])).astype(float)
                         else:
-                            point = np.concatenate((left, [i], [j], right))
+                            point = np.concatenate((left, [i], [j], right)).astype(float)
 
                         tensor[s, m, n, k] = self.func(point)
 
@@ -344,17 +343,41 @@ class ttrc(tt_interpolator):
     ):
         super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex)
 
-        if initial_bond_guess > max(grid.shape):
-            initial_bond_guess = max(grid.shape)
-            raise Warning(
+        if initial_bond_guess > max([grid_dim.shape[0] for grid_dim in grid]):
+            self.max_bond = max([grid_dim.shape[0] for grid_dim in grid])
+            warnings.warn(
                 "The initial bond guess is larger than the maximum grid size. Max bond gets initialized to the maximum of grid size instead of given initial_bond_guess."
             )
-
         else:
             self.max_bond = initial_bond_guess
 
-        self._create_initial_arrays()
+        self._create_initial_index_sets()
+        
+        # When picking the initial index sets at random, we can fall into Singular matrices very easily (this also
+        # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
+        # are not singular, and if they are, we repeat the process until we find a non-singular set of index sets.
+        
+        # IMPORTANT: IF THE INITIALIZATION IS SWITCHED TO DETERMINISTIC, THIS WHILE LOOP ILL NEVER END.
+
+        check_initialization_singularity = True
+
+        time1 = time.time()
+        tries = 1
+
+        while check_initialization_singularity:
+            try:
+                self._create_initial_arrays()
+                check_initialization_singularity = False
+
+            except np.linalg.LinAlgError:
+                self._create_initial_index_sets()
+                tries += 1
+
+        self._create_initial_bond_dimensions()
         self.trunctol = truncation_tol
+
+        time2 = time.time()
+        print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
 
     def _create_initial_index_sets(self):
         """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
@@ -424,6 +447,69 @@ class ttrc(tt_interpolator):
                 times = len(current_index) // len(self.j[k + 1])
                 previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
                 self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
+                
+    # Optional method to creat the initial index sets by taking the first element that appear in each dimension of the
+    # grid, instead of picking at random.
+    
+    # def _create_initial_index_sets(self):
+    #     """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
+    #     while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
+    #     follows the criteria:
+    #      1. At the current site, take min(len(grid[site]), max_bond) pivots.
+    #      2. Compare if this number of pivots is smaller/bigger than the number of pivots at the left/right site,
+    #         depending on if we are working with the I or J indices, respectively.
+    #      3. If it is smaller, expand the currently selected points by repeating them until they reach the same
+    #         dimension as the left/right index set.
+    #      4. If it is bigger, repeat the left/right index set until it reaches the same dimension as the currently
+    #         selected points.
+
+    #     In this way, the nestedness of the index sets is maintained, the pivots are not repeated (which is fatal for
+    #     the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
+    #     site without ever exceeding the maximum bond dimension.
+    #     """
+    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
+
+    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+    #     # by taking min(len(grid[0]), max_bond) pivots at random.
+    #     self.i[0] = np.array([[1]])
+    #     self.i[1] = np.array([self.grid[0][: min(len(self.grid[0]), self.max_bond)]]).T
+
+    #     for k in range(2, self.num_variables + 1):
+    #         # At site k-1 (we are indexing according to self.i, which is 1 site ahead the site indexing in the grid),
+    #         # take min(len(grid[k-1]), max_bond) pivots at random.
+    #         current_index = np.array([self.grid[k - 1][: min(len(self.grid[k - 1]), self.max_bond)]]).T
+
+    #         # If the number of pivots taken at the current site is smaller than the number of pivots taken at the
+    #         # previous site, take a random sample of the previous index set to match the current one and stack them.
+    #         if len(current_index) <= len(self.i[k - 1]):
+    #             previous_indices = self.i[k - 1][: len(current_index)]
+    #             self.i[k] = np.column_stack((previous_indices, current_index))
+
+    #         # If the number of pivots taken at the current site is bigger than the number of pivots taken at the
+    #         # previous site, repeat the previous index set until it reaches the same dimension as the current one, and
+    #         # then stack them.
+    #         else:
+    #             times = len(current_index[0]) // len(self.i[k - 1][0])
+    #             previous_choice = np.row_stack([self.i[k - 1] for _ in range(times + 1)])
+    #             self.i[k] = np.column_stack((previous_choice[: len(current_index)], current_index))
+
+    #     # =======================================================================================================
+    #     # Repeat the same process for the right index sets J starting from the last site and running left.
+
+    #     self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
+    #     self.j[-1] = np.array([[1]])
+    #     self.j[-2] = np.array([self.grid[-1][: min(len(self.grid[-1]), self.max_bond)]]).T
+
+    #     for k in range(-3, -self.num_variables - 1, -1):
+    #         current_index = np.array([self.grid[k + 1][: min(len(self.grid[k + 1]), self.max_bond)]]).T
+
+    #         if len(current_index) <= len(self.j[k + 1]):
+    #             previous_choice = self.j[k + 1][: len(current_index)]
+    #             self.j[k] = np.column_stack((current_index, previous_choice))
+    #         else:
+    #             times = len(current_index) // len(self.j[k + 1])
+    #             previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
+    #             self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
 
     def _create_initial_bond_dimensions(self):
         """Method that initializes the bond dimensions for all the sites in the tensor train. The bond dimensions are
@@ -453,9 +539,6 @@ class ttrc(tt_interpolator):
         self.p[0] = np.array([[1]], dtype=np.float_)
         self.p[-1] = np.array([[1]], dtype=np.float_)
         self.r = np.array([[1]], dtype=np.float_)
-
-        self._create_initial_index_sets()
-        self._create_initial_bond_dimensions()
 
         self.b = np.ndarray(self.num_variables, dtype=np.ndarray)
         self.b[0] = self.compute_single_site_tensor(0)
@@ -746,6 +829,32 @@ class greedy_cross(tt_interpolator):
         self._create_initial_bonds()
         self.error = []
 
+        self._create_initial_index_sets()
+
+        # When picking the initial index sets at random, we can fall into Singular matrices very easily (this also
+        # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
+        # are not singular, and if they are, we repeat the process until we find a non-singular set of index sets.
+        
+        # IMPORTANT: IF THE INITIALIZATION IS SWITCHED TO DETERMINISTIC, THIS WHILE LOOP ILL NEVER END.
+        check_initialization_singularity = True
+
+        time1 = time.time()
+        tries = 1
+
+        while check_initialization_singularity:
+            try:
+                for site in range(self.num_variables - 1):
+                    _ = self.compute_cross_blocks(site)
+                check_initialization_singularity = False
+
+            except np.linalg.LinAlgError:
+                self._create_initial_index_sets()
+                tries += 1
+
+        time2 = time.time()
+
+        print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
+
     def _create_initial_index_sets(self):
         """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
         each site. The pivot is taken by concatenating a random element of the grid at the current site to the
@@ -770,29 +879,32 @@ class greedy_cross(tt_interpolator):
             current_index = np.array([np.random.choice(self.grid[i + 1])])
             self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
-    def _create_initial_index_sets(self):
-        """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
-        each site. The pivot is taken by concatenating the first element of the grid at the current site to the
-        index set at the left/right site for the self.i/self.j variables, respectively.
-        """
-        self.i = np.ndarray(self.num_variables + 1, dtype=object)
+    # Optional method to create the initial index sets by taking the first point of the grid at each site, instead of
+    # taking random pivots
+    
+    # def _create_initial_index_sets(self):
+    #     """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
+    #     each site. The pivot is taken by concatenating the first element of the grid at the current site to the
+    #     index set at the left/right site for the self.i/self.j variables, respectively.
+    #     """
+    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-        # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
-        # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
-        self.i[0] = np.array([[1.0]])
-        self.i[1] = np.array([[self.grid[0][0]]])
-        for i in range(2, self.num_variables + 1):
-            current_index = np.array([self.grid[i - 1][0]])
-            self.i[i] = np.column_stack((self.i[i - 1], current_index))
+    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+    #     # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
+    #     # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
+    #     self.i[0] = np.array([[1.0]])
+    #     self.i[1] = np.array([[self.grid[0][0]]])
+    #     for i in range(2, self.num_variables + 1):
+    #         current_index = np.array([self.grid[i - 1][0]])
+    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-        # Repeat the same thing for the right index sets J starting from the last site and running left.
-        self.j = np.ndarray(self.num_variables, dtype=object)
-        self.j[-1] = np.array([[1.0]])
-        self.j[-2] = np.array([[self.grid[-1][0]]])
-        for i in range(-3, -self.num_variables - 1, -1):
-            current_index = np.array([self.grid[i + 1][0]])
-            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+    #     # Repeat the same thing for the right index sets J starting from the last site and running left.
+    #     self.j = np.ndarray(self.num_variables, dtype=object)
+    #     self.j[-1] = np.array([[1.0]])
+    #     self.j[-2] = np.array([[self.grid[-1][0]]])
+    #     for i in range(-3, -self.num_variables - 1, -1):
+    #         current_index = np.array([self.grid[i + 1][0]])
+    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self):
         """Method that initializes the bond dimensions of the tensor train to 1 at all sites."""
@@ -866,9 +978,10 @@ class greedy_cross(tt_interpolator):
             np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
-        for _ in range(self.sweeps):
+        for s in range(self.sweeps):
             # Save the current bond dimensions to check if they have been updated after the sweep. If not, the algorithm
             # has converged and we can stop.
+            print("Sweep", s + 1)
             pre_sweep_bonds = self.bonds.copy()
             self.full_sweep()
             if np.array_equal(pre_sweep_bonds, self.bonds):
