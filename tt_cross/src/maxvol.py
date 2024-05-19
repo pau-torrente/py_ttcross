@@ -95,7 +95,7 @@ def maxvol(A: np.ndarray, tol: float, max_iter: int) -> tuple[list[int], np.ndar
     return index[:r].copy(), D
 
 
-def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100):
+def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100) -> tuple[np.ndarray, np.ndarray]:
     """
     Maxvol algorithm implemented following the original paper:
     Goreinov, Sergei & Oseledets, Ivan & Savostyanov, D. & Tyrtyshnikov, E. & Zamarashkin, Nickolai. (2010).
@@ -190,8 +190,10 @@ def greedy_pivot_finder(
         - Icurrent_J_pos (np.ndarray): The current best columns of A, as in the position of the best sets of indices J
         in the array of all possible sets of indices J_1j = J_{k+1}⊗i_{k+1}.
 
-        - Itol (float): The tolerance to check for convergence. Once the difference between A and the approximation in the
-        position (i_new, j_new) is smaller than tol, the algorithm will stop.
+        - tol (float): The tolerance to check for convergence. Once the difference between A and the approximation in the
+        position (i_new, j_new) is smaller than tol, the algorithm will stop. Setting tol to values below 1e-10 is not
+        recommended, as the algorithm may produce singular matrices by selecting pivots that are really really similar
+        to what is already in the approximation.
 
     Returns:
         - tuple[np.ndarray, np.ndarray, int, int, float]: The new sets of indices I and J, the number of rows and columns

@@ -147,6 +147,7 @@ class ttrc_integrator(tt_integrator):
         intervals: np.ndarray,
         points_per_variable: int | list[int],
         sweeps: int,
+        initial_bond_guess: int,
         max_bond: int,
         maxvol_tol: float = 1e-4,
         truncation_tol: float = 1e-10,
@@ -166,6 +167,7 @@ class ttrc_integrator(tt_integrator):
 
         self.maxvol_tol = maxvol_tol
         self.truncation_tol = truncation_tol
+        self.init_bond = initial_bond_guess
         self.maxbond = max_bond
 
     def _interpolate(self):
@@ -176,7 +178,8 @@ class ttrc_integrator(tt_integrator):
             maxvol_tol=self.maxvol_tol,
             truncation_tol=self.truncation_tol,
             sweeps=self.sweeps,
-            initial_bond_guess=self.maxbond,
+            initial_bond_guess=self.init_bond,
+            max_bond=self.maxbond,
             is_f_complex=self.is_f_complex,
         )
 

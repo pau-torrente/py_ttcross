@@ -37,24 +37,26 @@ class one_dim_function_interpolator(ABC):
         """Converts the binary string into a float in the interval.
 
         Args:
-            binary_i (np.ndarray): The binary representation of a point x in the interval, given as a numpy array of
+            - binary_i (np.ndarray): The binary representation of a point x in the interval, given as a numpy array of
                 0s and 1s.
 
         Returns:
-            np.float_: The float representation of the binary string in the interval.
+            - np.float_: The float representation of the binary string in the interval.
         """
         i = np.sum([ip * 2**index for index, ip in enumerate(np.flip(binary_i))])
+
         return (i + 0.5) * self.h + self.interval[0]
+        # return (i) * self.h + self.interval[0]
 
     def func_from_binary(self, binary_i: np.ndarray) -> np.float_:
         """Evaluate the function in a point given as a binary string.
 
         Args:
-            binary_i (np.ndarray): The binary representation of a point x in the interval, given as a numpy array of
+            - binary_i (np.ndarray): The binary representation of a point x in the interval, given as a numpy array of
                 0s and 1s.
 
         Returns:
-            np.float_: The value of the function in the point x.
+            - np.float_: The value of the function in the point x.
         """
         return self.func(self.x(binary_i))
 
@@ -63,30 +65,33 @@ class one_dim_function_interpolator(ABC):
         tensor train interpolation to evaluate the function in a point x.
 
         Args:
-            x (np.float_): The value at which the function must be evaluated. This x must be in the interval in which
+            - x (np.float_): The value at which the function must be evaluated. This x must be in the interval in which
                 the function was interpolated.
 
         Returns:
-            np.ndarray: The array of vectors that must be contracted into the free legs of the tensors in the tensor
+            - np.ndarray: The array of vectors that must be contracted into the free legs of the tensors in the tensor
                 train to evaluate the function in the point x from the approximation.
         """
+        if x == self.interval[1]:
+            i = 2**self.d - 1
+        else:
+            i = int(np.round((x - self.interval[0]) / self.h - 0.5))
 
-        i = int(np.round((x - self.interval[0]) / self.h - 0.5))
         bin_i = np.array([int(ip) for ip in np.binary_repr(i, width=self.d)], dtype=np.int_)
         return np.array([[1, 0] if bin_i[site] == 0 else [0, 1] for site in range(self.d)], dtype=np.int_)
 
-    def eval(self, x: np.float_) -> np.float_:
+    def eval(self, x: np.float_) -> np.float_ | np.complex_:
         """Method to evaluate the function in a point x in the interval from the tensor train interpolation
 
         Args:
-            x (np.float_): The value at which the function must be evaluated. This x must be in the interval in which
+            - x (np.float_): The value at which the function must be evaluated. This x must be in the interval in which
                 the function was interpolated.
 
         Raises:
-            ValueError: If the function has not been interpolated yet.
+            - ValueError: If the function has not been interpolated yet.
 
         Returns:
-            np.float_: The value of the function in the point x.
+            - np.float_: The value of the function in the point x.
         """
         if not self.interpolated:
             raise ValueError("The function has not been interpolated yet")
@@ -134,9 +139,13 @@ class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
         grid.
 
         Args:
-            max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
-            pivot_finder_tol (float): The tolerance used in the pivot finder algorithm.
-            sweeps (int): The number of sweeps that the algorithm will perform.
+            - max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
+
+            - pivot_finder_tol (float): The tolerance used in the pivot finder algorithm. Setting this to values below
+            1e-10 is not recommended, as the algorithm may produce singular matrices by selecting pivots that are really
+            really similar to what is already in the approximation.
+
+            - sweeps (int): The number of sweeps that the algorithm will perform.
         """
         self.interpolator = greedy_cross(
             func=self.func_from_binary,
@@ -157,16 +166,18 @@ class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
     def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
         super().__init__(func, interval, d, complex_function)
 
-    def interpolate(self, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int) -> None:
+    def interpolate(
+        self, initial_bond_guess: int, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int
+    ) -> None:
         """Method that call the ttrc interpolator to interpolate the function in the interval using a binary grid.
 
         Args:
-            max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
-            maxvol_tol (float): The tolerance used in the maxvol algorithm. The closer to 0, the more accurate the
+            - max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
+            - maxvol_tol (float): The tolerance used in the maxvol algorithm. The closer to 0, the more accurate the
                 interpolation will be.
-            truncation_tol (float): The tolerance used in the truncation performed in the SVD procedure. The closer to
+            - truncation_tol (float): The tolerance used in the truncation performed in the SVD procedure. The closer to
                 0, the less eigenvalues will be eliminated.
-            sweeps (int): The number of sweeps that the algorithm will perform.
+            - sweeps (int): The number of sweeps that the algorithm will perform.
         """
         self.interpolator = ttrc(
             func=self.func_from_binary,
@@ -175,7 +186,8 @@ class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
             maxvol_tol=maxvol_tol,
             truncation_tol=truncation_tol,
             sweeps=sweeps,
-            initial_bond_guess=max_bond,
+            initial_bond_guess=initial_bond_guess,
+            max_bond=max_bond,
             is_f_complex=self.complex_f,
         )
 

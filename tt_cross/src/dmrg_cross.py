@@ -1,4 +1,4 @@
-from tabnanny import check
+from abc import ABC, abstractmethod
 import numpy as np
 from .maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
@@ -7,7 +7,7 @@ import warnings
 import time
 
 
-class tt_interpolator:
+class tt_interpolator(ABC):
     """
     Class representing a general tensor train interpolator. It only incorporates the methods related to obtaining
     the total indices I_{k-1}⊗i_k and J_{k+1}⊗j_{k+1} for a given site and 3 methods to compute single-site tensors,
@@ -279,6 +279,19 @@ class tt_interpolator:
 
         return tensor
 
+    @abstractmethod
+    def run(self) -> np.ndarray:
+        """Run the full algorithm, performing full sweeps until convergence or the maximum number of sweeps is reached.
+        After the index sets are updated, the final tensor train built using the computed index set is returned:
+
+        A(i1, i2, ..., iN) ≈
+          A(i1, J1) * [A(I1, J1)]^{-1} * A(I1, i2, J2) * [A(I2, J2]^{-1} * ... * [A(I{N-1}, J{N-1)]^{-1} * A(I{N-1}, iN)
+
+        Returns:
+            - np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
+            the function at all the grid points.
+        """
+
 
 class ttrc(tt_interpolator):
     """Class representing the ttrc interpolator presented in:
@@ -327,6 +340,8 @@ class ttrc(tt_interpolator):
         stored in the self.i and self.j variables. The selected initial_bond_guess pivots ate each site are selected
         at random, but maintaining the nestedness left and right in all the sites.
 
+        - max_bond (int): Maximum bond dimension allowed in the algorithm. Must be larger than the initial_bond_guess.
+
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
     """
 
@@ -339,24 +354,30 @@ class ttrc(tt_interpolator):
         truncation_tol: float,
         sweeps: int,
         initial_bond_guess: int,
+        max_bond: int,
         is_f_complex=False,
-    ):
+    ) -> None:
         super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex)
 
         if initial_bond_guess > max([grid_dim.shape[0] for grid_dim in grid]):
-            self.max_bond = max([grid_dim.shape[0] for grid_dim in grid])
+            self.init_bond = max([grid_dim.shape[0] for grid_dim in grid])
             warnings.warn(
                 "The initial bond guess is larger than the maximum grid size. Max bond gets initialized to the maximum of grid size instead of given initial_bond_guess."
             )
         else:
-            self.max_bond = initial_bond_guess
+            self.init_bond = initial_bond_guess
+
+        if max_bond < initial_bond_guess:
+            raise ValueError("Maximum allowed bond dimension must be larger than the initial bond guess.")
+        else:
+            self.max_bond = max_bond
 
         self._create_initial_index_sets()
-        
+
         # When picking the initial index sets at random, we can fall into Singular matrices very easily (this also
         # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
         # are not singular, and if they are, we repeat the process until we find a non-singular set of index sets.
-        
+
         # IMPORTANT: IF THE INITIALIZATION IS SWITCHED TO DETERMINISTIC, THIS WHILE LOOP ILL NEVER END.
 
         check_initialization_singularity = True
@@ -379,7 +400,7 @@ class ttrc(tt_interpolator):
         time2 = time.time()
         print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
 
-    def _create_initial_index_sets(self):
+    def _create_initial_index_sets(self) -> None:
         """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
         while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
         follows the criteria:
@@ -395,19 +416,19 @@ class ttrc(tt_interpolator):
         the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
         site without ever exceeding the maximum bond dimension.
         """
-        self.i = np.ndarray(self.num_variables + 1, dtype=object)
+        self.i = np.ndarray(self.num_variables, dtype=object)
 
         # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
         # by taking min(len(grid[0]), max_bond) pivots at random.
         self.i[0] = np.array([[1]])
         self.i[1] = np.array(
-            [np.random.choice(self.grid[0], size=min(len(self.grid[0]), self.max_bond), replace=False)]
+            [np.random.choice(self.grid[0], size=min(len(self.grid[0]), self.init_bond), replace=False)]
         ).T
-        for k in range(2, self.num_variables + 1):
+        for k in range(2, self.num_variables):
             # At site k-1 (we are indexing according to self.i, which is 1 site ahead the site indexing in the grid),
             # take min(len(grid[k-1]), max_bond) pivots at random.
             current_index = np.array(
-                [np.random.choice(self.grid[k - 1], size=min(len(self.grid[k - 1]), self.max_bond), replace=False)]
+                [np.random.choice(self.grid[k - 1], size=min(len(self.grid[k - 1]), self.init_bond), replace=False)]
             ).T
 
             # If the number of pivots taken at the current site is smaller than the number of pivots taken at the
@@ -431,12 +452,12 @@ class ttrc(tt_interpolator):
         self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
         self.j[-1] = np.array([[1]])
         self.j[-2] = np.array(
-            [np.random.choice(self.grid[-1], size=min(len(self.grid[-1]), self.max_bond), replace=False)]
+            [np.random.choice(self.grid[-1], size=min(len(self.grid[-1]), self.init_bond), replace=False)]
         ).T
 
         for k in range(-3, -self.num_variables - 1, -1):
             current_index = np.array(
-                [np.random.choice(self.grid[k + 1], size=min(len(self.grid[k + 1]), self.max_bond), replace=False)]
+                [np.random.choice(self.grid[k + 1], size=min(len(self.grid[k + 1]), self.init_bond), replace=False)]
             ).T
 
             if len(current_index) <= len(self.j[k + 1]):
@@ -447,15 +468,15 @@ class ttrc(tt_interpolator):
                 times = len(current_index) // len(self.j[k + 1])
                 previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
                 self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
-                
+
     # Optional method to creat the initial index sets by taking the first element that appear in each dimension of the
     # grid, instead of picking at random.
-    
+
     # def _create_initial_index_sets(self):
     #     """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
     #     while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
     #     follows the criteria:
-    #      1. At the current site, take min(len(grid[site]), max_bond) pivots.
+    #      1. At the current site, take min(len(grid[site]), init_bond) pivots.
     #      2. Compare if this number of pivots is smaller/bigger than the number of pivots at the left/right site,
     #         depending on if we are working with the I or J indices, respectively.
     #      3. If it is smaller, expand the currently selected points by repeating them until they reach the same
@@ -467,17 +488,17 @@ class ttrc(tt_interpolator):
     #     the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
     #     site without ever exceeding the maximum bond dimension.
     #     """
-    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
+    #     self.i = np.ndarray(self.num_variables, dtype=object)
 
     #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-    #     # by taking min(len(grid[0]), max_bond) pivots at random.
+    #     # by taking min(len(grid[0]), init_bond) pivots at random.
     #     self.i[0] = np.array([[1]])
-    #     self.i[1] = np.array([self.grid[0][: min(len(self.grid[0]), self.max_bond)]]).T
+    #     self.i[1] = np.array([self.grid[0][: min(len(self.grid[0]), self.init_bond)]]).T
 
-    #     for k in range(2, self.num_variables + 1):
+    #     for k in range(2, self.num_variables):
     #         # At site k-1 (we are indexing according to self.i, which is 1 site ahead the site indexing in the grid),
-    #         # take min(len(grid[k-1]), max_bond) pivots at random.
-    #         current_index = np.array([self.grid[k - 1][: min(len(self.grid[k - 1]), self.max_bond)]]).T
+    #         # take min(len(grid[k-1]), init_bond) pivots at random.
+    #         current_index = np.array([self.grid[k - 1][: min(len(self.grid[k - 1]), self.init_bond)]]).T
 
     #         # If the number of pivots taken at the current site is smaller than the number of pivots taken at the
     #         # previous site, take a random sample of the previous index set to match the current one and stack them.
@@ -498,10 +519,10 @@ class ttrc(tt_interpolator):
 
     #     self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
     #     self.j[-1] = np.array([[1]])
-    #     self.j[-2] = np.array([self.grid[-1][: min(len(self.grid[-1]), self.max_bond)]]).T
+    #     self.j[-2] = np.array([self.grid[-1][: min(len(self.grid[-1]), self.init_bond)]]).T
 
     #     for k in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[k + 1][: min(len(self.grid[k + 1]), self.max_bond)]]).T
+    #         current_index = np.array([self.grid[k + 1][: min(len(self.grid[k + 1]), self.init_bond)]]).T
 
     #         if len(current_index) <= len(self.j[k + 1]):
     #             previous_choice = self.j[k + 1][: len(current_index)]
@@ -511,13 +532,13 @@ class ttrc(tt_interpolator):
     #             previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
     #             self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
 
-    def _create_initial_bond_dimensions(self):
+    def _create_initial_bond_dimensions(self) -> None:
         """Method that initializes the bond dimensions for all the sites in the tensor train. The bond dimensions are
         computed from the sizes of the index sets I and J at each site. The bond dimensions are stored in the
         self.bonds variable.
 
         Raises:
-            ValueError: If the initial left and right index sets have different dimensions, which would result in non
+            - ValueError: If the initial left and right index sets have different dimensions, which would result in non
             square blocks that cannot be inverted.
         """
         self.bonds = np.ndarray(self.num_variables - 1, dtype=int)
@@ -526,7 +547,7 @@ class ttrc(tt_interpolator):
                 raise ValueError("Initial left and right indexes should have the same dimension")
             self.bonds[k - 1] = self.i[k + 1].shape[0]
 
-    def _create_initial_arrays(self):
+    def _create_initial_arrays(self) -> None:
         """Method that creates all the initial tensors needed by the algorithm as described in the original ttrc paper.
         This includes:
         - The initial P matrix array, as well as initializing the first and las ones to identity matrices os shape (1,1).
@@ -544,11 +565,9 @@ class ttrc(tt_interpolator):
         self.b[0] = self.compute_single_site_tensor(0)
 
         for i in range(1, self.num_variables):
-            cross_block = self.compute_cross_blocks(i - 1)
-            site_block = self.compute_single_site_tensor(i)
-            self.b[i] = ncon([cross_block, site_block], [[-1, 1], [1, -2, -3]])
+            self.b[i] = self.compute_single_site_tensor(i)
 
-    def initial_sweep(self):
+    def initial_sweep(self) -> None:
         """Method that performs the initial warm-up sweep from right to left following step by step the procedure
         described in the original ttrc paper. The main steps are:
         1. Contract to the current tensor B at site k the matrix R from thr right.
@@ -598,21 +617,21 @@ class ttrc(tt_interpolator):
         # For the last one, we just contract the R matrix from the right and update the B tensor.
         self.b[0] = ncon([self.b[0], self.r], [[-1, -2, 1], [1, -3]])
 
-    def check_convergence(self, C: np.ndarray, site: int):
+    def check_convergence(self, C: np.ndarray, site: int) -> None:
         """Checks if the algorithm has converged by comparing the current superblock tensor C with the approximation
         obtained in the previous sweep. The convergence criteria is:
         ||C - B_{site} * B_{site+1}|| < tol * ||C|| / sqrt(N-1)
 
         Args:
-            C (np.ndarray): The current superblock tensor A(I_{k-1}, i_k, i_{k+1}, J_{k+1}).
-            site (int): The site of the left physical leg of the superblock.
+            - C (np.ndarray): The current superblock tensor A(I_{k-1}, i_k, i_{k+1}, J_{k+1}).
+            - site (int): The site of the left physical leg of the superblock.
         """
         approx_superblock = ncon([self.b[site], self.b[site + 1]], [[-1, -2, 1], [1, -3, -4]])
         err = np.linalg.norm(C - approx_superblock)
         bound = self.trunctol * np.linalg.norm(C) / np.sqrt(self.num_variables - 1)
         self.converged = err < bound
 
-    def left_right_update(self, site):
+    def left_right_update(self, site) -> None:
         """Method that performs a singe update on a left to right sweep. The main steps follow the exact same structure
         as what is described in the original ttrc paper, and are the following:
         1. Compute the superblck tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k.
@@ -625,7 +644,7 @@ class ttrc(tt_interpolator):
         6. Update the P matrix at site k+1 with the selected ows from the left matrix of the SVD.
 
         Args:
-            site (int): The site corresponding to the left physical leg of the superblock tensor.
+            - site (int): The site corresponding to the left physical leg of the superblock tensor.
         """
 
         # Compute the superblock tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k and store the bond dimensions.
@@ -681,7 +700,7 @@ class ttrc(tt_interpolator):
         # left matrix of the SVD.
         self.p[site + 1] = maxvol_matrix[best_indices]
 
-    def right_left_update(self, site):
+    def right_left_update(self, site) -> None:
         """Method that performs a singe update on a right to left sweep. The main steps follow the exact same structure
         as what is described in the original ttrc paper for the left to right sweep, but in reverse, and are the
         following:
@@ -695,7 +714,7 @@ class ttrc(tt_interpolator):
         6. Update the P matrix at site k+1 with the selected columns from the right matrix of the SVD.
 
         Args:
-            site (int): The site corresponding to the left physical leg of the superblock tensor.
+            - site (int): The site corresponding to the left physical leg of the superblock tensor.
         """
 
         # Compute the superblock tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k and store the bond dimensions.
@@ -748,7 +767,7 @@ class ttrc(tt_interpolator):
         # left matrix of the SVD.
         self.p[site + 1] = vtemp[:, best_indices]
 
-    def full_sweep(self):
+    def full_sweep(self) -> None:
         """Perform a full left to right and right to left sweep in the tensor train."""
         for site in range(self.num_variables - 1):
             self.left_right_update(site)
@@ -756,16 +775,16 @@ class ttrc(tt_interpolator):
         for site in range(self.num_variables - 2, -1, -1):
             self.right_left_update(site)
 
-    def run(self):
+    def run(self) -> np.ndarray:
         """Run the full algorithm, performing the initial sweep and then the full sweeps until convergence or the
         maximum number of sweeps is reached. After the index sets are updated, the final tensor train built using the
-        computed index set:
+        computed index set is returned:
 
         A(i1, i2, ..., iN) ≈
           A(i1, J1) * [A(I1, J1)]^{-1} * A(I1, i2, J2) * [A(I2, J2]^{-1} * ... * [A(I{N-1}, J{N-1)]^{-1} * A(I{N-1}, iN)
 
         Returns:
-            np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
+            - np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
         self.converged = False
@@ -822,7 +841,7 @@ class greedy_cross(tt_interpolator):
         max_bond: int,
         sweeps: int,
         is_f_complex=False,
-    ):
+    ) -> None:
         super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex)
         self.max_bond = max_bond
         self._create_initial_index_sets()
@@ -834,7 +853,7 @@ class greedy_cross(tt_interpolator):
         # When picking the initial index sets at random, we can fall into Singular matrices very easily (this also
         # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
         # are not singular, and if they are, we repeat the process until we find a non-singular set of index sets.
-        
+
         # IMPORTANT: IF THE INITIALIZATION IS SWITCHED TO DETERMINISTIC, THIS WHILE LOOP ILL NEVER END.
         check_initialization_singularity = True
 
@@ -855,7 +874,7 @@ class greedy_cross(tt_interpolator):
 
         print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
 
-    def _create_initial_index_sets(self):
+    def _create_initial_index_sets(self) -> None:
         """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
         each site. The pivot is taken by concatenating a random element of the grid at the current site to the
         index set at the left/right site for the self.i/self.j variables, respectively.
@@ -881,36 +900,36 @@ class greedy_cross(tt_interpolator):
 
     # Optional method to create the initial index sets by taking the first point of the grid at each site, instead of
     # taking random pivots
-    
-    # def _create_initial_index_sets(self):
-    #     """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
-    #     each site. The pivot is taken by concatenating the first element of the grid at the current site to the
-    #     index set at the left/right site for the self.i/self.j variables, respectively.
-    #     """
-    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-    #     # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
-    #     # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
-    #     self.i[0] = np.array([[1.0]])
-    #     self.i[1] = np.array([[self.grid[0][0]]])
-    #     for i in range(2, self.num_variables + 1):
-    #         current_index = np.array([self.grid[i - 1][0]])
-    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
+    def _create_initial_index_sets(self) -> None:
+        """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
+        each site. The pivot is taken by concatenating the first element of the grid at the current site to the
+        index set at the left/right site for the self.i/self.j variables, respectively.
+        """
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-    #     # Repeat the same thing for the right index sets J starting from the last site and running left.
-    #     self.j = np.ndarray(self.num_variables, dtype=object)
-    #     self.j[-1] = np.array([[1.0]])
-    #     self.j[-2] = np.array([[self.grid[-1][0]]])
-    #     for i in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[i + 1][0]])
-    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+        # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
+        # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[self.grid[0][0]]])
+        for i in range(2, self.num_variables + 1):
+            current_index = np.array([self.grid[i - 1][0]])
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-    def _create_initial_bonds(self):
+        # Repeat the same thing for the right index sets J starting from the last site and running left.
+        self.j = np.ndarray(self.num_variables, dtype=object)
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[self.grid[-1][0]]])
+        for i in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[i + 1][0]])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+
+    def _create_initial_bonds(self) -> None:
         """Method that initializes the bond dimensions of the tensor train to 1 at all sites."""
         self.bonds = np.ones(self.num_variables - 1, dtype=int)
 
-    def index_update(self, site: int):
+    def index_update(self, site: int) -> None:
         """Method that performs an index update on a superblock at sites "site" and "site + 1". The main steps are:
         1. Check if the maximum bond dimension has been reached at the current site. If it has, return without updating
         the index set.
@@ -958,7 +977,7 @@ class greedy_cross(tt_interpolator):
         self.j[site] = new_J
         self.bonds[site] = rk
 
-    def full_sweep(self):
+    def full_sweep(self) -> None:
         """Perform a full left to right and right to left sweep in the tensor train."""
         for site in range(self.num_variables - 1):
             self.index_update(site)
@@ -966,7 +985,7 @@ class greedy_cross(tt_interpolator):
         for site in range(self.num_variables - 2, -1, -1):
             self.index_update(site)
 
-    def run(self):
+    def run(self) -> np.ndarray:
         """Execute the full greedy ttcross algorithm. The algorithm performs the sweeps until the maximum number of
         sweeps is reached or when the bond dimensions are not updated after a full sweep, which means that either the
         maximum bond dimension has been reached or the algorithm has converged. After the final index sets are computed,
