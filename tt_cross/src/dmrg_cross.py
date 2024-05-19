@@ -63,6 +63,7 @@ class tt_interpolator(ABC):
         self.bonds = np.ndarray(self.num_variables + 1, dtype=np.ndarray)
         self.bonds[0] = 1
         self.bonds[-1] = 1
+        self.super_block_time = 0
 
     def _obtain_superblock_total_indices(
         self, site: int, compute_index_pos: bool = True
@@ -258,6 +259,8 @@ class tt_interpolator(ABC):
             dtype=self.f_type,
         )
 
+        time1 = time.time()
+
         # Run over all the points in the set (I_{k-1}, i_k, i_{k+1}, J_{k+1})
         for s, left in enumerate(self.i[site + 1 - 1]):
             for k, right in enumerate(self.j[site + 1]):
@@ -276,6 +279,8 @@ class tt_interpolator(ABC):
                             point = np.concatenate((left, [i], [j], right)).astype(float)
 
                         tensor[s, m, n, k] = self.func(point)
+
+        self.super_block_time += time.time() - time1
 
         return tensor
 
@@ -788,6 +793,7 @@ class ttrc(tt_interpolator):
             the function at all the grid points.
         """
         self.converged = False
+        self.total_time = time.time()
         self.initial_sweep()
         for sweep in range(self.sweeps):
             print("Sweep", sweep + 1)
@@ -803,6 +809,7 @@ class ttrc(tt_interpolator):
             mps[2 * site + 1] = self.compute_cross_blocks(site)
 
         mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
+        self.total_time = time.time() - self.total_time
         return mps
 
 
@@ -997,6 +1004,8 @@ class greedy_cross(tt_interpolator):
             np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
+
+        self.total_time = time.time()
         for s in range(self.sweeps):
             # Save the current bond dimensions to check if they have been updated after the sweep. If not, the algorithm
             # has converged and we can stop.
@@ -1014,4 +1023,5 @@ class greedy_cross(tt_interpolator):
 
         mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
 
+        self.total_time = time.time() - self.total_time
         return mps
