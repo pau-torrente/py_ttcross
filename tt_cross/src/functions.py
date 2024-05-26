@@ -26,6 +26,10 @@ def slater(x: np.ndarray, num_variables: int = None) -> float:
     return np.exp(-np.linalg.norm(x)) / np.linalg.norm(x)
 
 
+def gaussian(x: np.ndarray, num_variables: int = None) -> float:
+    return np.exp(-(np.sum(x**2)))
+
+
 def inverse_mod(x: np.ndarray, num_variables: int = None) -> float:
     return 1 / np.sum(x**2)
 
