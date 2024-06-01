@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from .maxvol import greedy_pivot_finder, py_maxvol
+from ..maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
 import warnings
 import time
+from scipy.linalg import svd
 
 
 class tt_interpolator(ABC):
@@ -641,6 +642,7 @@ class ttrc(tt_interpolator):
             / np.sqrt(self.num_variables - 1)
         )
         self.not_converged = err > bound
+        print(err)
 
     def left_right_update(self, site) -> None:
         """Method that performs a singe update on a left to right sweep. The main steps follow the exact same structure
@@ -679,7 +681,8 @@ class ttrc(tt_interpolator):
         # the tolerance trunctol.
         C_reshaped = np.reshape(C, (r_left * len(self.grid[site]), len(self.grid[site + 1]) * r_right))
 
-        utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+        # utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+        utemp, s_temp, vtemp = svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
         chitemp = min(np.argmax(stemp_cumsum > (1.0 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
@@ -749,7 +752,8 @@ class ttrc(tt_interpolator):
         # the tolerance trunctol.
         C_reshaped = np.reshape(C, (r_left * len(self.grid[site]), len(self.grid[site + 1]) * r_right))
 
-        utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+        # utemp, s_temp, vtemp = np.linalg.svd(C_reshaped, full_matrices=True)
+        utemp, s_temp, vtemp = svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
         chitemp = min(np.argmax(stemp_cumsum > (1 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
@@ -915,29 +919,29 @@ class greedy_cross(tt_interpolator):
     # Optional method to create the initial index sets by taking the first point of the grid at each site, instead of
     # taking random pivots
 
-    # def _create_initial_index_sets(self) -> None:
-    #     """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
-    #     each site. The pivot is taken by concatenating the first element of the grid at the current site to the
-    #     index set at the left/right site for the self.i/self.j variables, respectively.
-    #     """
-    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
+    def _create_initial_index_sets(self) -> None:
+        """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
+        each site. The pivot is taken by concatenating the first element of the grid at the current site to the
+        index set at the left/right site for the self.i/self.j variables, respectively.
+        """
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-    #     # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
-    #     # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
-    #     self.i[0] = np.array([[1.0]])
-    #     self.i[1] = np.array([[self.grid[0][0]]])
-    #     for i in range(2, self.num_variables + 1):
-    #         current_index = np.array([self.grid[i - 1][0]])
-    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
+        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+        # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
+        # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[self.grid[0][0]]])
+        for i in range(2, self.num_variables + 1):
+            current_index = np.array([self.grid[i - 1][0]])
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-    #     # Repeat the same thing for the right index sets J starting from the last site and running left.
-    #     self.j = np.ndarray(self.num_variables, dtype=object)
-    #     self.j[-1] = np.array([[1.0]])
-    #     self.j[-2] = np.array([[self.grid[-1][0]]])
-    #     for i in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[i + 1][0]])
-    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+        # Repeat the same thing for the right index sets J starting from the last site and running left.
+        self.j = np.ndarray(self.num_variables, dtype=object)
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[self.grid[-1][0]]])
+        for i in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[i + 1][0]])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self) -> None:
         """Method that initializes the bond dimensions of the tensor train to 1 at all sites."""
