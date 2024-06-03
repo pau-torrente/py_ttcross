@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 import numpy as np
-from ..maxvol import greedy_pivot_finder, py_maxvol
+from tt_cross.src.utils.maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
 import warnings
@@ -230,16 +230,37 @@ class tt_interpolator(ABC):
         Returns:
             np.ndarray: The 2-legged tensor that is the inverse of the cross block tensor.
         """
-        if len(self.i[site + 1]) != len(self.j[site]):
-            raise ValueError("The left and right indexes must have the same dimension")
+        
+        dif = len(self.i[site + 1]) - len(self.j[site])
+        dif_in_i = True if dif > 0 else False
+        
+        if dif != 0:
+            warnings.warn(
+                f"The left and right indexes must have the same dimension at position {site}. {"I" if dif_in_i else "J"} has {abs(dif)} more elements than {"J" if dif_in_i else "I"} which have been discarded to compute the inverse block."
+            )
 
-        block = np.ndarray((len(self.i[site + 1]), len(self.j[site])), dtype=self.f_type)
 
         # Run over all the points in the set (I_{k}, J_{k}) to compute the block A(I_{k}, J_{k}) and then invert it.
+        
+        if dif == 0:
+            block = np.ndarray((len(self.i[site + 1]), len(self.j[site])), dtype=self.f_type)
 
-        for s, left in enumerate(self.i[site + 1]):
-            for k, right in enumerate(self.j[site]):
-                block[s, k] = self.func(np.concatenate((left, right)).astype(float))
+            for s, left in enumerate(self.i[site + 1]):
+                for k, right in enumerate(self.j[site]):
+                    block[s, k] = self.func(np.concatenate((left, right)).astype(float))
+          
+        else:
+            block = np.ndarray(
+                (
+                    len(self.i[site + 1])-abs(dif) if dif_in_i else len(self.i[site + 1]), 
+                    len(self.j[site]) if dif_in_i else len(self.j[site])-abs(dif),
+                ), 
+                dtype=self.f_type
+            )
+       
+            for s, left in enumerate(self.i[site + 1][:-abs(dif)] if dif_in_i else self.i[site + 1]):
+                for k, right in enumerate(self.j[site] if dif_in_i else self.j[site][:-abs(dif)]):
+                    block[s, k] = self.func(np.concatenate((left, right)).astype(float))
 
         inv_block = np.linalg.inv(block)
 
@@ -642,7 +663,7 @@ class ttrc(tt_interpolator):
             / np.sqrt(self.num_variables - 1)
         )
         self.not_converged = err > bound
-        print(err)
+        # print(err)
 
     def left_right_update(self, site) -> None:
         """Method that performs a singe update on a left to right sweep. The main steps follow the exact same structure
@@ -789,7 +810,23 @@ class ttrc(tt_interpolator):
 
         for site in range(self.num_variables - 2, -1, -1):
             self.right_left_update(site)
+            
+    def check_index_sets(self):
+        """At the end of the algorithm, checks if all the index sets I_k and J_k have the same size in order to build 
+        inverse blocks that form the approximation. If they don't, the method discards the last pivots in the index
+        sets, either in I or J, in order to make them the same size.
+        """
+        self.non_truncated_i = self.i.copy()
+        self.non_truncated_j = self.j.copy()
 
+        for site in range(self.num_variables - 1):
+            dif = len(self.i[site + 1]) - len(self.j[site])
+            dif_in_i = True if dif > 0 else False
+            
+            if dif != 0:
+                self.i[site + 1] = self.i[site + 1][: -abs(dif)] if dif_in_i else self.i[site + 1]
+                self.j[site] = self.j[site][: -abs(dif)] if not dif_in_i else self.j[site]
+                
     def run(self) -> np.ndarray:
         """Run the full algorithm, performing the initial sweep and then the full sweeps until convergence or the
         maximum number of sweeps is reached. After the index sets are updated, the final tensor train built using the
@@ -815,6 +852,8 @@ class ttrc(tt_interpolator):
 
         mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
+        self.check_index_sets()
+        
         for site in range(self.num_variables - 1):
             mps[2 * site] = self.compute_single_site_tensor(site)
             mps[2 * site + 1] = self.compute_cross_blocks(site)
@@ -919,29 +958,29 @@ class greedy_cross(tt_interpolator):
     # Optional method to create the initial index sets by taking the first point of the grid at each site, instead of
     # taking random pivots
 
-    def _create_initial_index_sets(self) -> None:
-        """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
-        each site. The pivot is taken by concatenating the first element of the grid at the current site to the
-        index set at the left/right site for the self.i/self.j variables, respectively.
-        """
-        self.i = np.ndarray(self.num_variables + 1, dtype=object)
+    # def _create_initial_index_sets(self) -> None:
+    #     """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
+    #     each site. The pivot is taken by concatenating the first element of the grid at the current site to the
+    #     index set at the left/right site for the self.i/self.j variables, respectively.
+    #     """
+    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-        # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
-        # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
-        self.i[0] = np.array([[1.0]])
-        self.i[1] = np.array([[self.grid[0][0]]])
-        for i in range(2, self.num_variables + 1):
-            current_index = np.array([self.grid[i - 1][0]])
-            self.i[i] = np.column_stack((self.i[i - 1], current_index))
+    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+    #     # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
+    #     # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
+    #     self.i[0] = np.array([[1.0]])
+    #     self.i[1] = np.array([[self.grid[0][0]]])
+    #     for i in range(2, self.num_variables + 1):
+    #         current_index = np.array([self.grid[i - 1][0]])
+    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-        # Repeat the same thing for the right index sets J starting from the last site and running left.
-        self.j = np.ndarray(self.num_variables, dtype=object)
-        self.j[-1] = np.array([[1.0]])
-        self.j[-2] = np.array([[self.grid[-1][0]]])
-        for i in range(-3, -self.num_variables - 1, -1):
-            current_index = np.array([self.grid[i + 1][0]])
-            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+    #     # Repeat the same thing for the right index sets J starting from the last site and running left.
+    #     self.j = np.ndarray(self.num_variables, dtype=object)
+    #     self.j[-1] = np.array([[1.0]])
+    #     self.j[-2] = np.array([[self.grid[-1][0]]])
+    #     for i in range(-3, -self.num_variables - 1, -1):
+    #         current_index = np.array([self.grid[i + 1][0]])
+    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
 
     def _create_initial_bonds(self) -> None:
         """Method that initializes the bond dimensions of the tensor train to 1 at all sites."""

@@ -295,37 +295,38 @@ class tracked_ttrc_integrator(ttrc, tt_integrator):
     def full_sweep(self) -> None:
         super().full_sweep()
 
-        try:
-            mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
+        mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
-            for site in range(self.num_variables - 1):
-                mps[2 * site] = self.compute_single_site_tensor(site)
-                mps[2 * site + 1] = self.compute_cross_blocks(site)
+        self.check_index_sets()
 
-            mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
+        for site in range(self.num_variables - 1):
+            mps[2 * site] = self.compute_single_site_tensor(site)
+            mps[2 * site + 1] = self.compute_cross_blocks(site)
 
+        mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
+
+        result = ncon(
+            [self.weights[0], mps[0][0]],
+            [[1], [1, -1]],
+        )
+
+        for i in range(1, self.num_variables):
             result = ncon(
-                [self.weights[0], mps[0][0]],
+                [result, mps[2 * i - 1]],
                 [[1], [1, -1]],
             )
 
-            for i in range(1, self.num_variables):
-                result = ncon(
-                    [result, mps[2 * i - 1]],
-                    [[1], [1, -1]],
-                )
+            result = ncon([result, mps[2 * i]], [[1], [1, -1, -2]])
 
-                result = ncon([result, mps[2 * i]], [[1], [1, -1, -2]])
+            result = ncon(
+                [self.weights[i], result],
+                [[1], [1, -1]],
+            )
 
-                result = ncon(
-                    [self.weights[i], result],
-                    [[1], [1, -1]],
-                )
+        self.evolution_dict[self.func_calls] = result[0]
 
-            self.evolution_dict[self.func_calls] = result[0]
-
-        except:
-            pass
+        self.i = self.non_truncated_i
+        self.j = self.non_truncated_j
 
     def _interpolate(self):
         return self.run()
