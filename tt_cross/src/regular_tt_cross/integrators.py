@@ -271,7 +271,7 @@ class tracked_ttrc_integrator(ttrc, tt_integrator):
         self.grid = np.ndarray(self.num_variables, dtype=object)
         self._initialize_grid_and_weights()
         self.func_calls = 0
-        self.evolution_dict = {}
+        self.evolution = []
 
         super().__init__(
             func=func,
@@ -323,7 +323,7 @@ class tracked_ttrc_integrator(ttrc, tt_integrator):
                 [[1], [1, -1]],
             )
 
-        self.evolution_dict[self.func_calls] = result[0]
+        self.evolution.append([self.func_calls, result[0]])
 
         self.i = self.non_truncated_i
         self.j = self.non_truncated_j
@@ -371,7 +371,7 @@ class tracked_greedycross_integrator(greedy_cross, tt_integrator):
         self.grid = np.ndarray(self.num_variables, dtype=object)
         self._initialize_grid_and_weights()
         self.func_calls = 0
-        self.evolution_dict = {}
+        self.evolution = []
 
         super().__init__(
             func=func,
@@ -419,7 +419,7 @@ class tracked_greedycross_integrator(greedy_cross, tt_integrator):
                 [[1], [1, -1]],
             )
 
-        self.evolution_dict[self.func_calls] = result[0]
+        self.evolution.append([self.func_calls, result[0]])
 
     def _interpolate(self):
         return self.run()
