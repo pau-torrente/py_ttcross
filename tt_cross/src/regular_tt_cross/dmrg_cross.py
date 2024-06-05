@@ -1,3 +1,7 @@
+import sys
+
+sys.path.append("/home/ptbadia/code/tfg/tfg_ttcross")
+
 from abc import ABC, abstractmethod
 import numpy as np
 from tt_cross.src.utils.maxvol import greedy_pivot_finder, py_maxvol
@@ -6,6 +10,60 @@ from ncon import ncon
 import warnings
 import time
 from scipy.linalg import svd
+import numba
+
+@numba.njit()
+def test_function(x: np.ndarray) -> np.float64:
+    t1 = 0
+    for k in range(x.shape[0]):
+        t1 += np.prod(x[: k + 1])
+
+    t2 = 0
+    for k in range(x.shape[0]):
+        t2 += np.prod(x[k:])
+
+    return 2.0 / ((1.0 + t1) * (1.0 + t2))
+
+@numba.njit()
+def compute_superblock_tensor(i: np.ndarray, j: np.ndarray, g1: np.ndarray, g2: np.ndarray, site: int):
+    """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
+    A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
+
+    Args:
+        site (int): The site of the left physical leg of the superblock tensor.
+
+    Returns:
+        np.ndarray: The output 4-legged tensor corresponding to the superblock tensor.
+    """
+    tensor = np.empty(
+        (len(i), len(g1), len(g2), len(j)),
+        dtype=np.float64,
+    )
+
+    # Run over all the points in the set (I_{k-1}, i_k, i_{k+1}, J_{k+1})
+    for s in range(len(i)):
+        left = i[s]
+        for k in range(len(j)):
+            right = j[k]
+            for m in range(len(g1)):
+                i_1 = np.array([g1[m]], dtype = np.float64)
+                for n in range(len(g2)):
+                    i_2 = np.array([g2[n]], dtype = np.float64)
+
+                    # And as in the single-site tensor, we consider if we are at the first site, the last site or in
+                    # the bulk to avoid adding the dummy index at the start or end of the self.i and self.j sets,
+                    # respectively.
+
+                    if site == 0:
+                        point = np.concatenate((i_1, i_2, right))
+                    elif site == 2:
+                        point = np.concatenate((left, i_1, i_2))
+                    elif site == 1:
+                        point = np.concatenate((left, i_1, i_2, right))
+
+                    tensor[s, m, n, k] = test_function(point)
+
+    return tensor
 
 
 class tt_interpolator(ABC):
@@ -65,6 +123,7 @@ class tt_interpolator(ABC):
         self.bonds[0] = 1
         self.bonds[-1] = 1
         self.super_block_time = 0
+        self.func_calls = 0
 
     def _obtain_superblock_total_indices(
         self, site: int, compute_index_pos: bool = True
@@ -265,46 +324,65 @@ class tt_interpolator(ABC):
         inv_block = np.linalg.inv(block)
 
         return inv_block
-
+    
     def compute_superblock_tensor(self, site: int) -> np.ndarray:
-        """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
-        A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
+        if site == 0:
+            s = 0
+        elif site == self.num_variables - 1:
+            s = 2
+        else:
+            s = 1
 
-        Args:
-            site (int): The site of the left physical leg of the superblock tensor.
+        i = self.i[site].astype(np.float64)
+        j = self.j[site + 1].astype(np.float64)
+        g1 = self.grid[site].astype(np.float64)
+        g2 = self.grid[site + 1].astype(np.float64)
 
-        Returns:
-            np.ndarray: The output 4-legged tensor corresponding to the superblock tensor.
-        """
-        tensor = np.ndarray(
-            (len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.grid[site + 1]), len(self.j[site + 1])),
-            dtype=self.f_type,
-        )
+        tensor = compute_superblock_tensor(i, j, g1, g2, s)
 
-        time1 = time.time()
-
-        # Run over all the points in the set (I_{k-1}, i_k, i_{k+1}, J_{k+1})
-        for s, left in enumerate(self.i[site + 1 - 1]):
-            for k, right in enumerate(self.j[site + 1]):
-                for m, i in enumerate(self.grid[site]):
-                    for n, j in enumerate(self.grid[site + 1]):
-
-                        # And as in the single-site tensor, we consider if we are at the first site, the last site or in
-                        # the bulk to avoid adding the dummy index at the start or end of the self.i and self.j sets,
-                        # respectively.
-
-                        if site == 0:
-                            point = np.concatenate(([i], [j], right)).astype(float)
-                        elif site == self.num_variables - 1:
-                            point = np.concatenate((left, [i], [j])).astype(float)
-                        else:
-                            point = np.concatenate((left, [i], [j], right)).astype(float)
-
-                        tensor[s, m, n, k] = self.func(point)
-
-        self.super_block_time += time.time() - time1
+        self.func_calls += np.prod(tensor.shape)
 
         return tensor
+
+    # def compute_superblock_tensor(self, site: int) -> np.ndarray:
+    #     """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
+    #     A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
+
+    #     Args:
+    #         site (int): The site of the left physical leg of the superblock tensor.
+
+    #     Returns:
+    #         np.ndarray: The output 4-legged tensor corresponding to the superblock tensor.
+    #     """
+    #     tensor = np.ndarray(
+    #         (len(self.i[site + 1 - 1]), len(self.grid[site]), len(self.grid[site + 1]), len(self.j[site + 1])),
+    #         dtype=self.f_type,
+    #     )
+
+    #     time1 = time.time()
+
+    #     # Run over all the points in the set (I_{k-1}, i_k, i_{k+1}, J_{k+1})
+    #     for s, left in enumerate(self.i[site + 1 - 1]):
+    #         for k, right in enumerate(self.j[site + 1]):
+    #             for m, i in enumerate(self.grid[site]):
+    #                 for n, j in enumerate(self.grid[site + 1]):
+
+    #                     # And as in the single-site tensor, we consider if we are at the first site, the last site or in
+    #                     # the bulk to avoid adding the dummy index at the start or end of the self.i and self.j sets,
+    #                     # respectively.
+
+    #                     if site == 0:
+    #                         point = np.concatenate(([i], [j], right)).astype(float)
+    #                     elif site == self.num_variables - 1:
+    #                         point = np.concatenate((left, [i], [j])).astype(float)
+    #                     else:
+    #                         point = np.concatenate((left, [i], [j], right)).astype(float)
+
+    #                     tensor[s, m, n, k] = self.func(point)
+
+    #     self.super_block_time += time.time() - time1
+
+    #     return tensor
 
     @abstractmethod
     def run(self) -> np.ndarray:
@@ -682,6 +760,7 @@ class ttrc(tt_interpolator):
         """
 
         # Compute the superblock tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k and store the bond dimensions.
+            
         C = self.compute_superblock_tensor(site)
         r_left = C.shape[0]
         r_right = C.shape[3]
@@ -1008,7 +1087,9 @@ class greedy_cross(tt_interpolator):
             return
 
         # Compute the superblock tensor at site k and reshape it to a matrix.
+            
         superblock_tensor = self.compute_superblock_tensor(site)
+        
         superblock_tensor = np.reshape(
             superblock_tensor,
             (

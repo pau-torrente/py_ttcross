@@ -26,6 +26,8 @@ class csv_tracked_greedycross(tracked_greedycross_integrator):
     def index_update(self, site: int):
         super().index_update(site)
 
+        # print(self.evolution)
+        # print("=========")
         write_to_csv(
             "/home/ptbadia/code/tfg/tfg_ttcross/tt_cross/example_notebooks/integration/C16_data/C16_greedy_100.csv",
             self.evolution[-1],

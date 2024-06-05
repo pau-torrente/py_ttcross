@@ -1,7 +1,7 @@
 from types import FunctionType
 import numpy as np
 from numpy.polynomial.legendre import leggauss
-from .dmrg_cross import greedy_cross, ttrc
+from .dmrg_cross import greedy_cross, ttrc, test_function, compute_superblock_tensor
 from abc import ABC, abstractmethod
 from ncon import ncon
 import time
@@ -285,13 +285,6 @@ class tracked_ttrc_integrator(ttrc, tt_integrator):
             is_f_complex=is_f_complex,
         )
 
-    def compute_superblock_tensor(self, site: int) -> np.ndarray:
-        tensor = super().compute_superblock_tensor(site)
-
-        self.func_calls += np.prod(tensor.shape)
-
-        return tensor
-
     def full_sweep(self) -> None:
         super().full_sweep()
 
@@ -382,13 +375,6 @@ class tracked_greedycross_integrator(greedy_cross, tt_integrator):
             sweeps=sweeps,
             is_f_complex=is_f_complex,
         )
-
-    def compute_superblock_tensor(self, site: int) -> np.ndarray:
-        tensor = super().compute_superblock_tensor(site)
-
-        self.func_calls += np.prod(tensor.shape)
-
-        return tensor
 
     def index_update(self, site: int):
         super().index_update(site)
