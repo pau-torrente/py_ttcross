@@ -40,6 +40,7 @@ class qtt_cross_integrator(ABC):
         self.complex_f = complex_function
         self.func = func
         self.interpolated = False
+        self.func_calls = 0
 
     def _x(self, binary: np.ndarray, ind: int) -> np.float_:
         i = np.sum([ip * 2**index for index, ip in enumerate(np.flip(binary))])
@@ -133,6 +134,7 @@ class ttrc_qtt_integrator(qtt_cross_integrator):
         )
 
         self.interpolation = self.interpolator.run()
+        self.func_calls = self.interpolator.func_calls
         return self.interpolation
 
 
@@ -175,4 +177,5 @@ class greedy_qtt_cross_integrator(qtt_cross_integrator):
         )
 
         self.interpolation = self.interpolator.run()
+        self.func_calls = self.interpolator.func_calls
         return self.interpolation

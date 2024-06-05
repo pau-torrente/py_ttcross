@@ -326,6 +326,9 @@ class tt_interpolator(ABC):
         return inv_block
     
     def compute_superblock_tensor(self, site: int) -> np.ndarray:
+        
+        time1 = time.time()
+        
         if site == 0:
             s = 0
         elif site == self.num_variables - 1:
@@ -342,6 +345,8 @@ class tt_interpolator(ABC):
 
         self.func_calls += np.prod(tensor.shape)
 
+        self.super_block_time += time.time() - time1
+        
         return tensor
 
     # def compute_superblock_tensor(self, site: int) -> np.ndarray:
@@ -713,7 +718,7 @@ class ttrc(tt_interpolator):
             _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1, compute_index_pos=False)
 
             best_indices, self.j[pos - 1] = py_maxvol(
-                A=q, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000
+                A=q, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=10000
             )
 
             # Update the P maatrix to the left of the current site k with the selected columns from the Q matrix.
@@ -807,7 +812,7 @@ class ttrc(tt_interpolator):
         I_k_1_expanded, _ = self._obtain_superblock_total_indices(site, compute_index_pos=False)
 
         best_indices, self.i[site + 1] = py_maxvol(
-            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=1 + self.tol, max_iters=1000
+            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=1 + self.tol, max_iters=10000
         )
 
         # Update the P matrix to the right of the current site and to the left of site+1 with the selected rows from the
@@ -876,7 +881,7 @@ class ttrc(tt_interpolator):
         # Obtain the total indices set J_{k+1}⊗i_{k+1} for the current site k and perfrom the maxvol
         # to update the index set I at site "site".
         _, J_k_1_expanded = self._obtain_superblock_total_indices(site, compute_index_pos=False)
-        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000)
+        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=10000)
 
         # Update the P matrix to the right of the current site and to the left of site+1 with the selected rows from the
         # left matrix of the SVD.
