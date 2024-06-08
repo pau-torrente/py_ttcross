@@ -13,6 +13,12 @@ bin-release/
 *.ipa
 *.apk
 
+# Ignore __pycache__ directories
+__pycache__/
+
+# Ignore all .pyc files (compiled Python files)
+*.pyc
+
 # Project files, i.e. `.project`, `.actionScriptProperties` and `.flexProperties`
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
