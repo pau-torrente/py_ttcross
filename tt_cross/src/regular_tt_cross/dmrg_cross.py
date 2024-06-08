@@ -1,3 +1,7 @@
+import sys
+
+sys.path.append("/home/ptbadia/code/tfg/tfg_ttcross")
+
 from abc import ABC, abstractmethod
 import numpy as np
 from tt_cross.src.utils.maxvol import greedy_pivot_finder, py_maxvol
@@ -6,6 +10,51 @@ from ncon import ncon
 import warnings
 import time
 from scipy.linalg import svd
+import numba as nb
+
+# Helper function that is compiled using numba outside the class to reduce the execution time of the superblock tensor
+# computation, which is the most expensive part of the algorithm.
+
+@nb.njit()
+def compute_superblock_tensor(i: np.ndarray, j: np.ndarray, g1: np.ndarray, g2: np.ndarray, site: int):
+    """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
+    A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
+
+    Args:
+        site (int): The site of the left physical leg of the superblock tensor.
+
+    Returns:
+        np.ndarray: The output 4-legged tensor corresponding to the superblock tensor.
+    """
+    tensor = np.empty(
+        (len(i), len(g1), len(g2), len(j)),
+        dtype=np.float64,
+    )
+
+    # Run over all the points in the set (I_{k-1}, i_k, i_{k+1}, J_{k+1})
+    for s in range(len(i)):
+        left = i[s]
+        for k in range(len(j)):
+            right = j[k]
+            for m in range(len(g1)):
+                i_1 = np.array([g1[m]], dtype = np.float64)
+                for n in range(len(g2)):
+                    i_2 = np.array([g2[n]], dtype = np.float64)
+
+                    # And as in the single-site tensor, we consider if we are at the first site, the last site or in
+                    # the bulk to avoid adding the dummy index at the start or end of the self.i and self.j sets,
+                    # respectively.
+
+                    if site == 0:
+                        point = np.concatenate((i_1, i_2, right))
+                    elif site == 2:
+                        point = np.concatenate((left, i_1, i_2))
+                    elif site == 1:
+                        point = np.concatenate((left, i_1, i_2, right))
+
+                    tensor[s, m, n, k] = int_function(point)
+
+    return tensor
 
 
 class tt_interpolator(ABC):
@@ -32,13 +81,22 @@ class tt_interpolator(ABC):
 
     Args:
         - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
-        and returns a float or complex number.
+        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which 
+        can be numba jit compiled.
+        
         - num_variables (int): The number of variables of the grid on which the function is defined.
+        
         - grid (np.ndarray): The grid on which the function is defined. It must be a numpy array of len = num_variables.
             The number of points in each dimension of the grid can be different.
+            
         - tol (float): Tolerance for the pivot finding algorithm.
+        
         - sweeps (int): Number of sweeps to perform.
+        
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
+        
+        - pivot_initialization (str, optional): The way in which the initial pivots are selected. It can be either
+        "random" or "first_n". Defaults to "random".
 
     """
 
@@ -49,7 +107,8 @@ class tt_interpolator(ABC):
         grid: np.ndarray,
         tol: float,
         sweeps: int,
-        is_f_complex=False,
+        is_f_complex:bool=False,
+        pivot_initialization:str = "random"
     ) -> None:
         self.func = func
         if len(grid) != num_variables:
@@ -58,6 +117,11 @@ class tt_interpolator(ABC):
         self.grid = grid
         self.tol = tol
         self.sweeps = sweeps
+        
+        if pivot_initialization not in ["random", "first_n"]:
+            raise ValueError("Pivot initialization must be either 'random' or 'first_n'.")
+        
+        self.pivot_init = pivot_initialization
 
         self.f_type = np.complex128 if is_f_complex else np.float64
 
@@ -65,6 +129,23 @@ class tt_interpolator(ABC):
         self.bonds[0] = 1
         self.bonds[-1] = 1
         self.super_block_time = 0
+        self.func_calls = 0
+        
+        # If the function can be compiled with numba, we compile it and use the compiled version to compute the
+        # superblock tensor. If it cannot be compiled, we use the non-compiled version.
+        try:
+            # Set the int_function as a global variable such that the external superblock tensor generator can call it
+            global int_function
+            int_function = nb.jit(nopython = True)(func)
+            self.compute_superblock_tensor = self._compute_superblock_tensor_compiled
+            print("Function successfully compiled with numba.")
+        
+        except:
+            self.func = func
+            self.compute_superblock_tensor = self._compute_superblock_tensor_non_compiled
+            print("Function not compiled with numba. Using non-compiled version.")
+            
+            
 
     def _obtain_superblock_total_indices(
         self, site: int, compute_index_pos: bool = True
@@ -265,11 +346,47 @@ class tt_interpolator(ABC):
         inv_block = np.linalg.inv(block)
 
         return inv_block
+    
+    def _compute_superblock_tensor_compiled(self, site: int) -> np.ndarray:
+        """Helper method that calls the compiled external compute_superblock_tensor function to compute the superblock
+        tensor. It is the most expensive part of the algorithm. When the function can indeed be jit compiled, this 
+        method is called to compute the superblock tensor.
 
-    def compute_superblock_tensor(self, site: int) -> np.ndarray:
+        Args:
+            site (int): _description_
+
+        Returns:
+            np.ndarray: _description_
+        """
+        
+        time1 = time.time()
+        
+        if site == 0:
+            s = 0
+        elif site == self.num_variables - 1:
+            s = 2
+        else:
+            s = 1
+
+        i = self.i[site].astype(np.float64)
+        j = self.j[site + 1].astype(np.float64)
+        g1 = self.grid[site].astype(np.float64)
+        g2 = self.grid[site + 1].astype(np.float64)
+
+        tensor = compute_superblock_tensor(i, j, g1, g2, s)
+
+        self.func_calls += np.prod(tensor.shape)
+
+        self.super_block_time += time.time() - time1
+        
+        return tensor
+
+    def _compute_superblock_tensor_non_compiled(self, site: int) -> np.ndarray:
         """Method that using the index sets stored in the self.i and self.j variables computes the superblock tensor
         A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
-
+        It is the most expensive part of the algorithm. This method is called whenever the function cannot be compiled
+        with numba.
+        
         Args:
             site (int): The site of the left physical leg of the superblock tensor.
 
@@ -347,7 +464,8 @@ class ttrc(tt_interpolator):
 
     Args:
         - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
-        and returns a float or complex number.
+        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which can 
+        be numba jit compiled.
 
         - num_variables (int): The number of variables of the grid on which the function is defined.
 
@@ -370,6 +488,9 @@ class ttrc(tt_interpolator):
         - max_bond (int): Maximum bond dimension allowed in the algorithm. Must be larger than the initial_bond_guess.
 
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
+        
+        - pivot_initialization (str, optional): The way in which the initial pivots are selected. It can be either
+        "random" or "first_n". Defaults to "random".
     """
 
     def __init__(
@@ -383,8 +504,9 @@ class ttrc(tt_interpolator):
         initial_bond_guess: int,
         max_bond: int,
         is_f_complex=False,
+        pivot_initialization:str = "random"
     ) -> None:
-        super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex)
+        super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex, pivot_initialization)
 
         if initial_bond_guess > max([grid_dim.shape[0] for grid_dim in grid]):
             self.init_bond = max([grid_dim.shape[0] for grid_dim in grid])
@@ -401,25 +523,26 @@ class ttrc(tt_interpolator):
 
         self._create_initial_index_sets()
 
-        # When picking the initial index sets at random, we can fall into Singular matrices very easily (this also
+        # When picking the initial index sets at random, we can fall into numpy erros easily (this also
         # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
-        # are not singular, and if they are, we repeat the process until we find a non-singular set of index sets.
-
-        # IMPORTANT: IF THE INITIALIZATION IS SWITCHED TO DETERMINISTIC, THIS WHILE LOOP ILL NEVER END.
-
+        # do not raise error and if they do, we repeat the initialization process.
+        
         check_initialization_singularity = True
 
         time1 = time.time()
         tries = 1
 
-        while check_initialization_singularity:
-            try:
-                self._create_initial_arrays()
-                check_initialization_singularity = False
+        if self.pivot_init == "random":
+            while check_initialization_singularity:
+                try:
+                    self._create_initial_arrays()
+                    check_initialization_singularity = False
 
-            except np.linalg.LinAlgError:
-                self._create_initial_index_sets()
-                tries += 1
+                except np.linalg.LinAlgError:
+                    self._create_initial_index_sets()
+                    tries += 1
+        else:
+            self._create_initial_arrays()
 
         self._create_initial_bond_dimensions()
         self.trunctol = truncation_tol
@@ -427,7 +550,7 @@ class ttrc(tt_interpolator):
         time2 = time.time()
         print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
 
-    def _create_initial_index_sets(self) -> None:
+    def _create_initial_index_sets_random(self) -> None:
         """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
         while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
         follows the criteria:
@@ -443,6 +566,7 @@ class ttrc(tt_interpolator):
         the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
         site without ever exceeding the maximum bond dimension.
         """
+        np.random.seed(0)
         self.i = np.ndarray(self.num_variables, dtype=object)
 
         # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
@@ -499,65 +623,77 @@ class ttrc(tt_interpolator):
     # Optional method to creat the initial index sets by taking the first element that appear in each dimension of the
     # grid, instead of picking at random.
 
-    # def _create_initial_index_sets(self):
-    #     """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
-    #     while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
-    #     follows the criteria:
-    #      1. At the current site, take min(len(grid[site]), init_bond) pivots.
-    #      2. Compare if this number of pivots is smaller/bigger than the number of pivots at the left/right site,
-    #         depending on if we are working with the I or J indices, respectively.
-    #      3. If it is smaller, expand the currently selected points by repeating them until they reach the same
-    #         dimension as the left/right index set.
-    #      4. If it is bigger, repeat the left/right index set until it reaches the same dimension as the currently
-    #         selected points.
+    def _create_initial_index_sets_firstn(self):
+        """Method that creates the initial index sets for all the sites in the tensor train by taking pivots at random
+        while maintaning the left and right nestedness of I and J, respectively. The number of pivots taken at each site
+        follows the criteria:
+         1. At the current site, take min(len(grid[site]), init_bond) pivots.
+         2. Compare if this number of pivots is smaller/bigger than the number of pivots at the left/right site,
+            depending on if we are working with the I or J indices, respectively.
+         3. If it is smaller, expand the currently selected points by repeating them until they reach the same
+            dimension as the left/right index set.
+         4. If it is bigger, repeat the left/right index set until it reaches the same dimension as the currently
+            selected points.
 
-    #     In this way, the nestedness of the index sets is maintained, the pivots are not repeated (which is fatal for
-    #     the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
-    #     site without ever exceeding the maximum bond dimension.
-    #     """
-    #     self.i = np.ndarray(self.num_variables, dtype=object)
+        In this way, the nestedness of the index sets is maintained, the pivots are not repeated (which is fatal for
+        the maxvol algorithm, as it would make the matrix singular) and the number of pivots is adapted to each
+        site without ever exceeding the maximum bond dimension.
+        """
+        self.i = np.ndarray(self.num_variables, dtype=object)
 
-    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-    #     # by taking min(len(grid[0]), init_bond) pivots at random.
-    #     self.i[0] = np.array([[1]])
-    #     self.i[1] = np.array([self.grid[0][: min(len(self.grid[0]), self.init_bond)]]).T
+        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+        # by taking min(len(grid[0]), init_bond) pivots at random.
+        self.i[0] = np.array([[1]])
+        self.i[1] = np.array([self.grid[0][: min(len(self.grid[0]), self.init_bond)]]).T
 
-    #     for k in range(2, self.num_variables):
-    #         # At site k-1 (we are indexing according to self.i, which is 1 site ahead the site indexing in the grid),
-    #         # take min(len(grid[k-1]), init_bond) pivots at random.
-    #         current_index = np.array([self.grid[k - 1][: min(len(self.grid[k - 1]), self.init_bond)]]).T
+        for k in range(2, self.num_variables):
+            # At site k-1 (we are indexing according to self.i, which is 1 site ahead the site indexing in the grid),
+            # take min(len(grid[k-1]), init_bond) pivots at random.
+            current_index = np.array([self.grid[k - 1][: min(len(self.grid[k - 1]), self.init_bond)]]).T
 
-    #         # If the number of pivots taken at the current site is smaller than the number of pivots taken at the
-    #         # previous site, take a random sample of the previous index set to match the current one and stack them.
-    #         if len(current_index) <= len(self.i[k - 1]):
-    #             previous_indices = self.i[k - 1][: len(current_index)]
-    #             self.i[k] = np.column_stack((previous_indices, current_index))
+            # If the number of pivots taken at the current site is smaller than the number of pivots taken at the
+            # previous site, take a random sample of the previous index set to match the current one and stack them.
+            if len(current_index) <= len(self.i[k - 1]):
+                previous_indices = self.i[k - 1][: len(current_index)]
+                self.i[k] = np.column_stack((previous_indices, current_index))
 
-    #         # If the number of pivots taken at the current site is bigger than the number of pivots taken at the
-    #         # previous site, repeat the previous index set until it reaches the same dimension as the current one, and
-    #         # then stack them.
-    #         else:
-    #             times = len(current_index[0]) // len(self.i[k - 1][0])
-    #             previous_choice = np.row_stack([self.i[k - 1] for _ in range(times + 1)])
-    #             self.i[k] = np.column_stack((previous_choice[: len(current_index)], current_index))
+            # If the number of pivots taken at the current site is bigger than the number of pivots taken at the
+            # previous site, repeat the previous index set until it reaches the same dimension as the current one, and
+            # then stack them.
+            else:
+                times = len(current_index[0]) // len(self.i[k - 1][0])
+                previous_choice = np.row_stack([self.i[k - 1] for _ in range(times + 1)])
+                self.i[k] = np.column_stack((previous_choice[: len(current_index)], current_index))
 
-    #     # =======================================================================================================
-    #     # Repeat the same process for the right index sets J starting from the last site and running left.
+        # =======================================================================================================
+        # Repeat the same process for the right index sets J starting from the last site and running left.
 
-    #     self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
-    #     self.j[-1] = np.array([[1]])
-    #     self.j[-2] = np.array([self.grid[-1][: min(len(self.grid[-1]), self.init_bond)]]).T
+        self.j = np.ndarray(self.num_variables, dtype=np.ndarray)
+        self.j[-1] = np.array([[1]])
+        self.j[-2] = np.array([self.grid[-1][: min(len(self.grid[-1]), self.init_bond)]]).T
 
-    #     for k in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[k + 1][: min(len(self.grid[k + 1]), self.init_bond)]]).T
+        for k in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[k + 1][: min(len(self.grid[k + 1]), self.init_bond)]]).T
 
-    #         if len(current_index) <= len(self.j[k + 1]):
-    #             previous_choice = self.j[k + 1][: len(current_index)]
-    #             self.j[k] = np.column_stack((current_index, previous_choice))
-    #         else:
-    #             times = len(current_index) // len(self.j[k + 1])
-    #             previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
-    #             self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
+            if len(current_index) <= len(self.j[k + 1]):
+                previous_choice = self.j[k + 1][: len(current_index)]
+                self.j[k] = np.column_stack((current_index, previous_choice))
+            else:
+                times = len(current_index) // len(self.j[k + 1])
+                previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
+                self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
+                
+    def _create_initial_index_sets(self) -> None:
+        """Helper method to call the pivot initialization methods depending on if the user wants to initialize the
+        pivots at random or by taking the first n points in each dimension of the grid.
+        """
+        if self.pivot_init == "random":
+            self._create_initial_index_sets_random()
+        elif self.pivot_init == "first_n":
+            self._create_initial_index_sets_firstn()
+        else:
+            raise ValueError("Pivot initialization must be either 'random' or 'first_n'.")
+            
 
     def _create_initial_bond_dimensions(self) -> None:
         """Method that initializes the bond dimensions for all the sites in the tensor train. The bond dimensions are
@@ -635,7 +771,7 @@ class ttrc(tt_interpolator):
             _, J_k_1_expanded = self._obtain_superblock_total_indices(site=pos - 1, compute_index_pos=False)
 
             best_indices, self.j[pos - 1] = py_maxvol(
-                A=q, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000
+                A=q, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=10000
             )
 
             # Update the P maatrix to the left of the current site k with the selected columns from the Q matrix.
@@ -682,6 +818,7 @@ class ttrc(tt_interpolator):
         """
 
         # Compute the superblock tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k and store the bond dimensions.
+            
         C = self.compute_superblock_tensor(site)
         r_left = C.shape[0]
         r_right = C.shape[3]
@@ -706,7 +843,7 @@ class ttrc(tt_interpolator):
         utemp, s_temp, vtemp = svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
-        chitemp = min(np.argmax(stemp_cumsum > (1.0 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
+        chitemp = min(np.argmax(stemp_cumsum >= (1.0 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
 
         utemp = utemp[:, :chitemp]
         vtemp = vtemp[:chitemp, :]
@@ -728,7 +865,7 @@ class ttrc(tt_interpolator):
         I_k_1_expanded, _ = self._obtain_superblock_total_indices(site, compute_index_pos=False)
 
         best_indices, self.i[site + 1] = py_maxvol(
-            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=1 + self.tol, max_iters=1000
+            A=maxvol_matrix, full_index_set=I_k_1_expanded, tol=1 + self.tol, max_iters=100000
         )
 
         # Update the P matrix to the right of the current site and to the left of site+1 with the selected rows from the
@@ -777,7 +914,7 @@ class ttrc(tt_interpolator):
         utemp, s_temp, vtemp = svd(C_reshaped, full_matrices=True)
 
         stemp_cumsum = np.cumsum(s_temp)
-        chitemp = min(np.argmax(stemp_cumsum > (1 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
+        chitemp = min(np.argmax(stemp_cumsum >= (1 - self.trunctol) * stemp_cumsum[-1]) + 1, self.max_bond)
 
         utemp = utemp[:, :chitemp]
         vtemp = vtemp[:chitemp, :]
@@ -797,7 +934,7 @@ class ttrc(tt_interpolator):
         # Obtain the total indices set J_{k+1}⊗i_{k+1} for the current site k and perfrom the maxvol
         # to update the index set I at site "site".
         _, J_k_1_expanded = self._obtain_superblock_total_indices(site, compute_index_pos=False)
-        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=1000)
+        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=100000)
 
         # Update the P matrix to the right of the current site and to the left of site+1 with the selected rows from the
         # left matrix of the SVD.
@@ -887,6 +1024,9 @@ class greedy_cross(tt_interpolator):
         - sweeps (int): Number of sweeps to perform.
 
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
+        
+        - pivot_initialization (str, optional): The method used to initialize the pivots at each site. It can be either
+            'random' or 'first_n'. Defaults to 'random'.
     """
 
     def __init__(
@@ -898,8 +1038,9 @@ class greedy_cross(tt_interpolator):
         max_bond: int,
         sweeps: int,
         is_f_complex=False,
+        pivot_initialization:str="random",
     ) -> None:
-        super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex)
+        super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex, pivot_initialization)
         self.max_bond = max_bond
         self._create_initial_index_sets()
         self._create_initial_bonds()
@@ -917,21 +1058,34 @@ class greedy_cross(tt_interpolator):
         time1 = time.time()
         tries = 1
 
-        while check_initialization_singularity:
+        if self.pivot_init == "random":
+            while check_initialization_singularity and tries < 1000:
+                try:
+                    for site in range(self.num_variables - 1):
+                        _ = self.compute_cross_blocks(site)
+                    check_initialization_singularity = False
+
+                except np.linalg.LinAlgError:
+                    self._create_initial_index_sets()
+                    tries += 1
+                    
+                if tries == 1000:
+                    raise ValueError("Initialization failed after 1000 tries. Try again.")
+        else:
             try:
                 for site in range(self.num_variables - 1):
                     _ = self.compute_cross_blocks(site)
-                check_initialization_singularity = False
-
+            
             except np.linalg.LinAlgError:
-                self._create_initial_index_sets()
-                tries += 1
+                raise ValueError(
+                    "Initialization with the first n points results in singular matrices. Try with the random initialization."
+                )
 
         time2 = time.time()
 
-        print(f"Initialization done after time: {time2 - time1} seconds and {tries} tries.")
+        print(f"Initialization succesfully done after time: {time2 - time1} seconds and {tries} tries.")
 
-    def _create_initial_index_sets(self) -> None:
+    def _create_initial_index_sets_random(self) -> None:
         """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
         each site. The pivot is taken by concatenating a random element of the grid at the current site to the
         index set at the left/right site for the self.i/self.j variables, respectively.
@@ -958,29 +1112,40 @@ class greedy_cross(tt_interpolator):
     # Optional method to create the initial index sets by taking the first point of the grid at each site, instead of
     # taking random pivots
 
-    # def _create_initial_index_sets(self) -> None:
-    #     """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
-    #     each site. The pivot is taken by concatenating the first element of the grid at the current site to the
-    #     index set at the left/right site for the self.i/self.j variables, respectively.
-    #     """
-    #     self.i = np.ndarray(self.num_variables + 1, dtype=object)
+    def _create_initial_index_sets_firstn(self) -> None:
+        """Method that creates the initial index sets for all the sites in the tensor train by taking a single pivot at
+        each site. The pivot is taken by concatenating the first element of the grid at the current site to the
+        index set at the left/right site for the self.i/self.j variables, respectively.
+        """
+        self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
-    #     # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
-    #     # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
-    #     # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
-    #     self.i[0] = np.array([[1.0]])
-    #     self.i[1] = np.array([[self.grid[0][0]]])
-    #     for i in range(2, self.num_variables + 1):
-    #         current_index = np.array([self.grid[i - 1][0]])
-    #         self.i[i] = np.column_stack((self.i[i - 1], current_index))
+        # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
+        # by taking the first point in the grid at the first site. For the next ones, simply append to the pivot to the
+        # left a the first point from the grid at the current site, maintaining the nestedness of the index sets.
+        self.i[0] = np.array([[1.0]])
+        self.i[1] = np.array([[self.grid[0][0]]])
+        for i in range(2, self.num_variables + 1):
+            current_index = np.array([self.grid[i - 1][0]])
+            self.i[i] = np.column_stack((self.i[i - 1], current_index))
 
-    #     # Repeat the same thing for the right index sets J starting from the last site and running left.
-    #     self.j = np.ndarray(self.num_variables, dtype=object)
-    #     self.j[-1] = np.array([[1.0]])
-    #     self.j[-2] = np.array([[self.grid[-1][0]]])
-    #     for i in range(-3, -self.num_variables - 1, -1):
-    #         current_index = np.array([self.grid[i + 1][0]])
-    #         self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+        # Repeat the same thing for the right index sets J starting from the last site and running left.
+        self.j = np.ndarray(self.num_variables, dtype=object)
+        self.j[-1] = np.array([[1.0]])
+        self.j[-2] = np.array([[self.grid[-1][0]]])
+        for i in range(-3, -self.num_variables - 1, -1):
+            current_index = np.array([self.grid[i + 1][0]])
+            self.j[i] = np.column_stack((current_index, self.j[i + 1]))
+            
+    def _create_initial_index_sets(self) -> None:
+        """Helper method to call the pivot initialization methods depending on if the user wants to initialize the
+        pivots at random or by taking the first n points in each dimension of the grid.
+        """
+        if self.pivot_init == "random":
+            self._create_initial_index_sets_random()
+        elif self.pivot_init == "first_n":
+            self._create_initial_index_sets_firstn()
+        else:
+            raise ValueError("Pivot initialization must be either 'random' or 'first_n'.")
 
     def _create_initial_bonds(self) -> None:
         """Method that initializes the bond dimensions of the tensor train to 1 at all sites."""
@@ -1008,7 +1173,9 @@ class greedy_cross(tt_interpolator):
             return
 
         # Compute the superblock tensor at site k and reshape it to a matrix.
+            
         superblock_tensor = self.compute_superblock_tensor(site)
+        
         superblock_tensor = np.reshape(
             superblock_tensor,
             (
