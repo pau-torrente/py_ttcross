@@ -131,8 +131,16 @@ class one_dim_function_interpolator(ABC):
 class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
     """Class representing a one-dimensional function interpolator that uses the ttcross greedy interpolator."""
 
-    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
+    def __init__(
+        self,
+        func: FunctionType,
+        interval: list[float, float],
+        d: int,
+        complex_function: bool,
+        pivot_initialization: str = "random",
+    ) -> None:
         super().__init__(func, interval, d, complex_function)
+        self.pivot_init = pivot_initialization
 
     def interpolate(self, max_bond: int, pivot_finder_tol: float, sweeps: int) -> None:
         """Method that call the ttcross greedy interpolator to interpolate the function in the interval using a binary
@@ -155,6 +163,7 @@ class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
             max_bond=max_bond,
             sweeps=sweeps,
             is_f_complex=self.complex_f,
+            pivot_initialization=self.pivot_init,
         )
         self.interpolation = self.interpolator.run()
         self.interpolated = True
@@ -163,8 +172,16 @@ class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
 class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
     """Class representing a one-dimensional function interpolator that uses the ttrc interpolator."""
 
-    def __init__(self, func: FunctionType, interval: list[float, float], d: int, complex_function: bool) -> None:
+    def __init__(
+        self,
+        func: FunctionType,
+        interval: list[float, float],
+        d: int,
+        complex_function: bool,
+        pivot_initialization: str = "random",
+    ) -> None:
         super().__init__(func, interval, d, complex_function)
+        self.pivot_init = pivot_initialization
 
     def interpolate(
         self, initial_bond_guess: int, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int
@@ -189,6 +206,7 @@ class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
             initial_bond_guess=initial_bond_guess,
             max_bond=max_bond,
             is_f_complex=self.complex_f,
+            pivot_initialization=self.pivot_init,
         )
 
         self.interpolation = self.interpolator.run()

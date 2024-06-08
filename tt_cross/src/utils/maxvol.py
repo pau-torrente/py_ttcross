@@ -105,6 +105,33 @@ def py_maxvol(A: np.ndarray, full_index_set: np.ndarray, tol=1.05, max_iters=100
     input matrix A. In terms of speed, the algorithm uses the BLAS and LAPACK libraries to perform the operations on the
     matrices. The algorithm will return the indices of the rows of A that form a submatrix with the largest volume, and
     the best set of indices from the original full index set.
+
+    The algorithm follows the steps below:
+    - The input matrix will be renamed to B, which will be a copy of A, transposed if n < r.
+    - The maximal submatrix will be C, which initially will be asumed to lie in the first r rows of B.
+                                  | I |
+    - We know that B * C^-1 = D = |   | , where I is an identity of shape (r, r).
+                                  | Z |
+    - We will solve the system C^T * X = B^T, where X = D^T. This will give us the matrix D.
+    - And with D, we can just find max(D[i, j]), add the swap i<->j to the list of indices, and update D with the
+    procedure described in the paper, with an update to just the Z part of D.
+
+    The algorithm is adapted from the original implementation in the maxvolpy library https://github.com/c-f-h/maxvolpy/tree/master
+    to the needs of the TTRC algorithm implemented in this package.
+
+    Args:
+        - A (np.ndarray): The input matrix of shape (n, r). If n < r, the algorithm will transpose the matrix.
+
+        - full_index_set (np.ndarray): The full index set that composes the rows of the input matrix A (the columns in
+        case where n < r).
+
+        - tol (float): The tolerance 1+delta that the algorithm will use to check for convergence.
+
+        - max_iters (int): A maximum number of iterations that the algorithm will perform.
+
+    Returns:
+        - tuple[np.ndarray, np.ndarray]: The indices of the rows of A that form a submatrix with the largest volume, and
+        the best set of indices from the original full index set.
     """
     # some work on parameters
     if tol < 1:

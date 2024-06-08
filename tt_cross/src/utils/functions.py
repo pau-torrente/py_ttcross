@@ -1,39 +1,43 @@
 import numpy as np
+import numba as nb
 
-# import numba as nb
-
-
-# @nb.njit()  # -> Especially important for cases where the function contains loops
-def func_template(x: np.ndarray, num_variables: int = None) -> complex:
-    # THIS IS OPTIONAL, AND MIGHT SLOW DOWN THE FUNCTION
-    if num_variables is not None and len(x) != num_variables:
-        raise ValueError("The number of variables does not match the number of variables in the function")
-
-    if not isinstance(x.dtype, (np.float_, np.int_)):
-        raise ValueError("The input array must contain floats or ints, not complex numbers")
-
-    value = 0
-    # ADD THE FUNCTION TO THE VALUE
-
-    return value
+# Some example functions, all of the compilable with numba -> Performance improvement is immense
 
 
-def log_of_sum(x: np.ndarray, num_variables: int = None) -> float:
+def log_of_sum(x: np.ndarray) -> float:
     return np.log(np.sum(x))
 
 
-def slater(x: np.ndarray, num_variables: int = None) -> float:
+def slater(x: np.ndarray) -> float:
     return np.exp(-np.linalg.norm(x)) / np.linalg.norm(x)
 
 
-def gaussian(x: np.ndarray, num_variables: int = None) -> float:
+def gaussian(x: np.ndarray) -> float:
     return np.exp(-(np.sum(x**2)))
 
 
-def inverse_mod(x: np.ndarray, num_variables: int = None) -> float:
+def inverse_mod(x: np.ndarray) -> float:
     return 1 / np.sum(x**2)
 
 
-def convert_from_binary(x: np.ndarray, d: int) -> float:
-    # Here we are assuming that x contains only 0s and 1s
-    return np.sum([2**i * x[i] for i in range(d)])
+# More example functions
+
+
+def test_function1(x: np.ndarray) -> np.ndarray:
+    return np.log(np.prod(x))
+
+
+def test_function2(x: np.ndarray) -> float:
+    return np.sin(sum(x)) * np.prod(x * np.exp(-x)) * (3 * np.linalg.norm(x) + 1 + x[0])
+
+
+def test_function3(x: np.ndarray) -> float:
+    return np.sin(sum(x)) * np.prod(np.exp(-x))
+
+
+def test_function4(x: np.ndarray) -> float:
+    return 1 / (1 + np.sum(x))
+
+
+def test_function5(x: np.ndarray) -> np.ndarray:
+    return np.prod(np.sin(x) / 2)

@@ -66,8 +66,8 @@ def write_to_csv(filename: str, data: list):
         writer.writerow(data)
 
 
-integral = c_with_MC(16, 40000000)
+integral = c_with_MC(63, 5000000)
 
-dF = pd.DataFrame(integral[::1000], columns=["n_samples", "integral"])
+dF = pd.DataFrame(integral[::10], columns=["n_samples", "integral"])
 
-dF.to_csv("/home/ptbadia/code/tfg/tfg_ttcross/tt_cross/example_notebooks/integration/C16_data/C16_mc2.csv")
+dF.to_csv("/home/ptbadia/code/tfg/tfg_ttcross/tt_cross/example_notebooks/integration/C64_data/C64_mc_numba4.csv")
