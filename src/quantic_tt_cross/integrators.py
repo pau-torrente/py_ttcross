@@ -1,4 +1,4 @@
-from tt_cross.src.regular_tt_cross.dmrg_cross import greedy_cross, ttrc
+from src.regular_tt_cross.dmrg_cross import greedy_cross, ttrc
 
 import numpy as np
 from abc import ABC, abstractmethod

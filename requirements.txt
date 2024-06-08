@@ -1,0 +1,5 @@
+ncon
+numba
+numpy
+scipy
+matplotlib

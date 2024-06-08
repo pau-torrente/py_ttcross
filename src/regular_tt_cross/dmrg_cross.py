@@ -1,10 +1,7 @@
 import sys
-
-sys.path.append("/home/ptbadia/code/tfg/tfg_ttcross")
-
 from abc import ABC, abstractmethod
 import numpy as np
-from tt_cross.src.utils.maxvol import greedy_pivot_finder, py_maxvol
+from src.utils.maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
 import warnings
