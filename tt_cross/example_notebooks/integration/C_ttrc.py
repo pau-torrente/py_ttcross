@@ -37,19 +37,18 @@ def write_to_csv(filename: str, data: list):
         writer.writerow(data)
 
 
-initial_b_guess = [1, 2, 3, 4, 5, 4, 4, 4]
-sw = [3, 4, 4, 5, 6]
-for i, bond in enumerate(range(1, 6)):
+initial_b_guess = [1, 2, 3, 4, 4, 4, 4, 4]
+for i, bond in enumerate([1, 2, 3, 4, 5, 6]):
     integrator = ttrc_integrator(
         func=test_function,
         num_variables=63,
         intervals=np.array([[0, 1] for _ in range(63)]),
         points_per_variable=5,
-        sweeps=sw[i],
+        sweeps=3,
         initial_bond_guess=initial_b_guess[i],
         max_bond=bond,
         quadrature="Gauss",
-        truncation_tol=1e-6,
+        truncation_tol=1e-8,
         maxvol_tol=1e-12,
     )
     val = integrator.integrate()
