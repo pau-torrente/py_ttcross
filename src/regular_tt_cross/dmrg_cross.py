@@ -141,7 +141,8 @@ class tt_interpolator(ABC):
             self.func = func
             self.compute_superblock_tensor = self._compute_superblock_tensor_non_compiled
             print("Function not compiled with numba. Using non-compiled version.")
-            
+        
+        self.mps = None
             
 
     def _obtain_superblock_total_indices(
@@ -419,6 +420,66 @@ class tt_interpolator(ABC):
         self.super_block_time += time.time() - time1
 
         return tensor
+    
+    def _eval_contraction_tensors(self, x: np.ndarray) -> np.ndarray:
+        # TODO THIS IS AN EXPERIMENTAL METHOD THAT REQUIRES THE GRID TO HAVE THE SAME NUMBER OF POINT IN EACH DIMENSION
+        
+        """Method that creates the array of vectors that must be contracted into the free legs of the tensors in the
+        tensor train interpolation to evaluate the function in a point x.
+
+        Args:
+            - x (np.ndarray): The value at which the function must be evaluated. This x must be in the interval in which
+                the function was interpolated.
+
+        Returns:
+            - np.ndarray: The array of vectors that must be contracted into the free legs of the tensor train.
+        """
+        abs_diff = np.abs(self.grid - x[:, np.newaxis])
+        indices = np.argmin(abs_diff, axis=1)
+        contraction_tensors = np.zeros_like(self.grid)
+        contraction_tensors[np.arange(self.grid.shape[0]), indices] = 1
+        return contraction_tensors
+    
+    def eval(self, x: np.ndarray) -> np.float_ | np.complex_:
+        """Method to evaluate the function in a point x in the interval from the tensor train interpolation
+
+        Args:
+            - x (np.float_): The value at which the function must be evaluated. This x must be in the interval in which
+                the function was interpolated.
+
+        Raises:
+            - ValueError: If the function has not been interpolated yet.
+
+        Returns:
+            - np.float_ | np.complex_: The value of the function in the point x.
+        """
+        if self.mps is None:
+            raise ValueError("The tensor train has not been computed yet. Execute the run method first.")
+        
+        contr_tensors = self._eval_contraction_tensors(x)
+                
+        result = self.mps[0][0]
+        result = ncon(
+            [contr_tensors[0], result],
+            [[1], [1, -1]],
+        )
+
+        for i in range(1, self.num_variables):
+            result = ncon(
+                [result, self.mps[2 * i - 1]],
+                [[1], [1, -1]],
+            )
+
+            result = ncon([result, self.mps[2 * i]], [[1], [1, -1, -2]])
+
+            result = ncon(
+                [contr_tensors[i], result],
+                [[1], [1, -1]],
+            )
+
+        return result[0]
+            
+        
 
     @abstractmethod
     def run(self) -> np.ndarray:
@@ -973,28 +1034,31 @@ class ttrc(tt_interpolator):
             - np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
-        self.total_time = time.time()
-        self.initial_sweep()
-        for sweep in range(self.sweeps):
-            print("Sweep", sweep + 1)
-            self.not_converged = False
-            self.full_sweep()
+        if self.mps is None:
+            self.total_time = time.time()
+            self.initial_sweep()
+            for sweep in range(self.sweeps):
+                print("Sweep", sweep + 1)
+                self.not_converged = False
+                self.full_sweep()
 
-            if not self.not_converged:
-                print(f"Converged at sweep {sweep}")
-                break
+                if not self.not_converged:
+                    print(f"Converged at sweep {sweep}")
+                    break
 
-        mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
+            mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
-        self.check_index_sets()
+            self.check_index_sets()
+            
+            for site in range(self.num_variables - 1):
+                mps[2 * site] = self.compute_single_site_tensor(site)
+                mps[2 * site + 1] = self.compute_cross_blocks(site)
+
+            mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
+            self.mps = mps
+            self.total_time = time.time() - self.total_time
         
-        for site in range(self.num_variables - 1):
-            mps[2 * site] = self.compute_single_site_tensor(site)
-            mps[2 * site + 1] = self.compute_cross_blocks(site)
-
-        mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
-        self.total_time = time.time() - self.total_time
-        return mps
+        return self.mps
 
 
 class greedy_cross(tt_interpolator):
@@ -1218,24 +1282,27 @@ class greedy_cross(tt_interpolator):
             np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
+        
+        if self.mps is None:
+            self.total_time = time.time()
+            for s in range(self.sweeps):
+                # Save the current bond dimensions to check if they have been updated after the sweep. If not, the algorithm
+                # has converged and we can stop.
+                print("Sweep", s + 1)
+                pre_sweep_bonds = self.bonds.copy()
+                self.full_sweep()
+                if np.array_equal(pre_sweep_bonds, self.bonds):
+                    break
 
-        self.total_time = time.time()
-        for s in range(self.sweeps):
-            # Save the current bond dimensions to check if they have been updated after the sweep. If not, the algorithm
-            # has converged and we can stop.
-            print("Sweep", s + 1)
-            pre_sweep_bonds = self.bonds.copy()
-            self.full_sweep()
-            if np.array_equal(pre_sweep_bonds, self.bonds):
-                break
+            mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
-        mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
+            for site in range(self.num_variables - 1):
+                mps[2 * site] = self.compute_single_site_tensor(site)
+                mps[2 * site + 1] = self.compute_cross_blocks(site)
 
-        for site in range(self.num_variables - 1):
-            mps[2 * site] = self.compute_single_site_tensor(site)
-            mps[2 * site + 1] = self.compute_cross_blocks(site)
+            mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
 
-        mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
-
-        self.total_time = time.time() - self.total_time
-        return mps
+            self.mps = mps
+            self.total_time = time.time() - self.total_time
+            
+        return self.mps

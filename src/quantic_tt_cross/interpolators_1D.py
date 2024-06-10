@@ -91,7 +91,7 @@ class one_dim_function_interpolator(ABC):
             - ValueError: If the function has not been interpolated yet.
 
         Returns:
-            - np.float_: The value of the function in the point x.
+            - np.float_ | np.complex_: The value of the function in the point x.
         """
         if not self.interpolated:
             raise ValueError("The function has not been interpolated yet")
