@@ -1090,6 +1090,7 @@ class greedy_cross(tt_interpolator):
         each site. The pivot is taken by concatenating a random element of the grid at the current site to the
         index set at the left/right site for the self.i/self.j variables, respectively.
         """
+        np.random.seed(10)
         self.i = np.ndarray(self.num_variables + 1, dtype=object)
 
         # Add first the dummy index set in the first position of self.i and create the first real index set at site 1
