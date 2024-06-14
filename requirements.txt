@@ -1,5 +1,5 @@
-ncon
-numba
-numpy
-scipy
-matplotlib
+ncon==2.0.0
+numba==0.59.1
+numpy==1.26.4
+scipy==1.12.0
+matplotlib==3.8.3
