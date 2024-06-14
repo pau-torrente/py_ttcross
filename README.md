@@ -92,7 +92,7 @@ test_interpolator.interpolate(
 **More examples can be found in the [example_notebooks](https://github.com/pau-torrente/py_ttcross/tree/main/example_notebooks) of the repo.**
 
 ## Troubleshooting
-Since this package was a first approach to the TT-Cross framework, not much focus was put on precision and performance. For this reason, very large interpolation instances can be slow and errors might propagate quickly due to the lack of precision (a more in depth discussion of this last point can be found in [1]). If you find that your test outpu results which not make much sense, or feel like the algorithms are not able to converge, **try reducing the maximum bond dimension or the tolerances**. This will result in smaller tensors which will, hopefully, not accumulate as much error and be handled better by numpy.
+Since this package was a first approach to the TT-Cross framework, not much focus was put on precision and performance. For this reason, very large interpolation instances can be slow and errors might propagate quickly due to the lack of precision (a more in depth discussion of this last point can be found in [1]). If you find that your tests output results which not make much sense, or feel like the algorithms are not able to converge, **try reducing the maximum bond dimension or the tolerances**. This will result in smaller tensors which will, hopefully, not accumulate as much error and be handled better by numpy.
 
 
 
