@@ -1,7 +1,7 @@
 import sys
 from abc import ABC, abstractmethod
 import numpy as np
-from src.utils.maxvol import greedy_pivot_finder, py_maxvol
+from py_ttcross.utils.maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
 import warnings

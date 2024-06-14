@@ -1,4 +1,4 @@
-from src.regular_tt_cross.dmrg_cross import greedy_cross, ttrc
+from py_ttcross.regular_tt_cross.dmrg_cross import greedy_cross, ttrc
 import numpy as np
 from ncon import ncon
 from types import FunctionType
