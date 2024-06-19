@@ -137,31 +137,28 @@ class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
         interval: list[float, float],
         d: int,
         complex_function: bool,
+        max_bond: int,
+        pivot_finder_tol: float,
+        sweeps: int,
         pivot_initialization: str = "random",
     ) -> None:
         super().__init__(func, interval, d, complex_function)
         self.pivot_init = pivot_initialization
+        self.max_bond = max_bond
+        self.pivot_finder_tol = pivot_finder_tol
+        self.sweeps = sweeps
 
-    def interpolate(self, max_bond: int, pivot_finder_tol: float, sweeps: int) -> None:
+    def interpolate(self) -> None:
         """Method that call the ttcross greedy interpolator to interpolate the function in the interval using a binary
         grid.
-
-        Args:
-            - max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
-
-            - pivot_finder_tol (float): The tolerance used in the pivot finder algorithm. Setting this to values below
-            1e-10 is not recommended, as the algorithm may produce singular matrices by selecting pivots that are really
-            really similar to what is already in the approximation.
-
-            - sweeps (int): The number of sweeps that the algorithm will perform.
         """
         self.interpolator = greedy_cross(
             func=self.func_from_binary,
             num_variables=self.d,
             grid=self.grid,
-            tol=pivot_finder_tol,
-            max_bond=max_bond,
-            sweeps=sweeps,
+            tol=self.pivot_finder_tol,
+            max_bond=self.max_bond,
+            sweeps=self.sweeps,
             is_f_complex=self.complex_f,
             pivot_initialization=self.pivot_init,
         )
@@ -177,34 +174,33 @@ class ttrc_one_dim_func_interpolator(one_dim_function_interpolator):
         func: FunctionType,
         interval: list[float, float],
         d: int,
+        initial_bond_guess: int,
+        max_bond: int,
+        maxvol_tol: float,
+        truncation_tol: float,
+        sweeps: int,
         complex_function: bool,
         pivot_initialization: str = "random",
     ) -> None:
         super().__init__(func, interval, d, complex_function)
         self.pivot_init = pivot_initialization
+        self.initial_bond_guess = initial_bond_guess
+        self.max_bond = max_bond
+        self.maxvol_tol = maxvol_tol
+        self.truncation_tol = truncation_tol
+        self.sweeps = sweeps
 
-    def interpolate(
-        self, initial_bond_guess: int, max_bond: int, maxvol_tol: float, truncation_tol: float, sweeps: int
-    ) -> None:
-        """Method that call the ttrc interpolator to interpolate the function in the interval using a binary grid.
-
-        Args:
-            - max_bond (int): The max bond dimension of the MPS that will be used to interpolate the function.
-            - maxvol_tol (float): The tolerance used in the maxvol algorithm. The closer to 0, the more accurate the
-                interpolation will be.
-            - truncation_tol (float): The tolerance used in the truncation performed in the SVD procedure. The closer to
-                0, the less eigenvalues will be eliminated.
-            - sweeps (int): The number of sweeps that the algorithm will perform.
-        """
+    def interpolate(self) -> None:
+        """Method that call the ttrc interpolator to interpolate the function in the interval using a binary grid."""
         self.interpolator = ttrc(
             func=self.func_from_binary,
             num_variables=self.d,
             grid=self.grid,
-            maxvol_tol=maxvol_tol,
-            truncation_tol=truncation_tol,
-            sweeps=sweeps,
-            initial_bond_guess=initial_bond_guess,
-            max_bond=max_bond,
+            maxvol_tol=self.maxvol_tol,
+            truncation_tol=self.truncation_tol,
+            sweeps=self.sweeps,
+            initial_bond_guess=self.initial_bond_guess,
+            max_bond=self.max_bond,
             is_f_complex=self.complex_f,
             pivot_initialization=self.pivot_init,
         )
