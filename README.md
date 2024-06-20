@@ -61,7 +61,7 @@ integrator = ttrc_integrator(
     maxvol_tol=1e-8,
 )
 
-integrator.integrate
+integrator.integrate()
 ```
 In this case, the grid is created internally from the given integrals and the nu,ber of point per variable specified.
 
