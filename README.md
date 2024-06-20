@@ -48,7 +48,7 @@ test_interpolator.run()
 Or directly compute its integral using quadrature rules, Gauss-Legendre in this case:
 ```python
 from py_ttcross.regular_tt_cross.integrators import ttrc_integrator
-integrator = tracked_ttrc_integrator(
+integrator = ttrc_integrator(
     func=test_function,
     num_variables=8,
     intervals=np.array([[0, 1] for _ in range(8)]),
@@ -60,6 +60,8 @@ integrator = tracked_ttrc_integrator(
     truncation_tol=0,
     maxvol_tol=1e-8,
 )
+
+integrator.integrate
 ```
 In this case, the grid is created internally from the given integrals and the nu,ber of point per variable specified.
 
@@ -79,15 +81,18 @@ And pass it to the 1D interpolators of the package:
 ```python
 from py_ttcross.quantic_tt_cross.interpolators_1D import ttrc_one_dim_func_interpolator
 test_interpolator = ttrc_one_dim_func_interpolator(
-    func=test_func, interval=interval, d=15, complex_function=False, pivot_initialization="first_n"
-)
-test_interpolator.interpolate(
+    func=test_func,
+    interval=interval,
+    d=15,
+    complex_function=False,
     initial_bond_guess=2,
     max_bond=16,
     maxvol_tol=1e-10,
     truncation_tol=1e-10,
     sweeps=5,
+    pivot_initialization="first_n"
 )
+test_interpolator.interpolate()
 ```
 **More examples can be found in the [example_notebooks](https://github.com/pau-torrente/py_ttcross/tree/main/example_notebooks) of the repo.**
 
