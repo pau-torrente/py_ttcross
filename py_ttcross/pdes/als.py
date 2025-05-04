@@ -1,0 +1,592 @@
+from ast import Not
+from types import FunctionType
+from copy import deepcopy
+import numpy as np
+from scipy import linalg as la
+from ncon import ncon
+from .operators import Prolongation, Laplacian
+from ..tns.mps_operations import OrthoOps
+from ..tns.mps import create_random_mps
+
+
+# TODO ADD ERROR TRACKING
+
+class ALS:
+    """
+    DMRG style ALS class. It contains all the machinery to obtain a compressed version of an operator acting on a function in QTT format.
+
+    Args:
+        - func (np.ndarray): The QTT representation of the function on which the operator acts.
+        - operator (np.ndarray): The MPO representation of the operator.
+        - initial_bond_guess (int): The initial maximum bond dimension guess for the MPS.
+        - max_bond_dim (int): The maximum bond dimension alloed in the two site DMRG style procedure
+        - tol (float): Truncation tolerance in the svd steps.
+        - sweeps (int): The number of sweeps to perform. By sweep it is meant a full left to right and then right to
+            left sequence of updates along the MPS.
+    """
+
+    def __init__(
+        self,
+        func: np.ndarray,
+        operator: np.ndarray,
+        initial_bonds_guess:int,
+        max_bond_dim:int,
+        tol: float,
+        sweeps: int,
+    ):
+        self.func = func
+        self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=True)
+        self.opt_mps = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
+        self.mpo = operator
+        self.L = len(self.func)
+
+        self._check_mpo_mps_compatibility()
+
+        self.bonds = [tensor.shape[2] for tensor in self.fine_mps[:self.L + 1]]
+        self.max_chi = max_bond_dim
+        self.tol = tol
+        self.sweeps = sweeps
+        self.overlap = []
+        self.truncation_error = []
+
+    def _check_mpo_mps_compatibility(self):
+        if len(self.func) != len(self.mpo):
+            raise ValueError(f"Given function MPS and MPO do not share the same length: len(func) = {len(self.func)} != len(mpo) = {len(self.mpo)}")
+        
+        if self.func[0].shape[0] != self.mpo.shape[0]:
+            raise ValueError(f"Func and MPO physical indices do not match at site 0")
+        
+        for site in range(1, self.L):
+            if self.func[0].shape[1] != self.mpo.shape[1]:
+                raise ValueError(f"Func and MPO physical indices do not match at site {site}")
+            
+    def _initialize_envs(self):
+        """
+        Initializes the left and right environment blocks for the energy expectation value. Only the right blocks are
+        computed here, as the left blocks are computed on the fly during the first left to right sweep. The convention
+        used for the blocks is the following:
+
+            Left blocks:
+
+            psi      -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+                    |  |  |  |       =  |L_0   |  |  |      =  |L_1   |          = ...
+            MPO     |  0--0--0--...     |——————|--0--0--...    |——————|--0--...
+                    |  |  |  |          |      |  |  |         |      |
+            psi_0    -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+
+            Right blocks:
+
+            psi     ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+                         |  |  |  |  =    |  |  |R_n-1 |  =       |  |R_n-2 |
+            MPO     ...--0--0--0  |     --0--0--|——————|     ...--0--|——————|
+                         |  |  |  |       |  |  |      |          |  |      |
+            psi_0   ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+        """
+
+        self.l = np.ndarray(self.L, dtype=object)
+        self.r = np.ndarray(self.L, dtype=object)
+
+        for site in range(self.L, 0, -1):
+            self._right_envs_update(site)
+
+    def _left_envs_update(self, site: int):
+        """Creates/updates the left environment blocks that participate in the energy expectation value from the current
+        MPS and the MPO.
+
+        Args:
+            site (int): Site of the MPS where the left environment block is to be created/updated.
+        """
+        if site == 0:
+            self.l[site] = ncon(
+                [self.func[site], self.mpo, np.conj(self.opt_mps[site])],
+                [[1, -1], [1, 2, -2], [2, -3]]
+            )
+
+            # self.l[site] = ncon(
+            #     [self.coarse_mps[site], self.mpo],
+            #     [[1, -1], [1, -3, -2]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], np.conj(self.fine_mps[site])],
+            #     [[-1, -2, 1], [1, -3]],
+            # )
+
+        else:
+            self.l[site] = ncon(
+                [self.l[site - 1], self.func[site], self.mpo, np.conj(self.opt_mps[site])],
+                [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
+            )
+
+            # self.l[site] = ncon(
+            #     [self.l[site - 1], self.coarse_mps[site]],
+            #     [[1, -3, -4], [1, -2, -1]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], self.mpo[site]],
+            #     [[-1, 1, 2, -4], [2, 1, -3, -2]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], np.conj(self.fine_mps[site])],
+            #     [[-1, -2, 1, 2], [2, 1, -3]],
+            # )
+
+    def _right_envs_update(self, site: int):
+        """Creates/updates the right environment blocks that participate in the energy expectation value from the
+        current MPS and the MPO.
+
+        Args:
+            site (int): Site of the MPS where the right environment block is to be created/updated.
+        """
+        if site == self.L - 1:
+            self.r[site] = ncon(
+                [self.func, self.mpo[site], np.conj(self.opt_mps[site])],
+                [[-1, 1], [-2, 1, 2], [-3, 2]],
+            )
+
+        else:
+            self.r[site] = ncon(
+                [self.func[site], self.mpo[site], np.conj(self.opt_mps[site]), self.r[site + 1]],
+                [[-1, 2, 1], [-2, 2, 4, 3], [-3, 4, 5], [1, 3, 5]]
+            )
+            # self.r[site] = ncon(
+            #     [self.coarse_mps[site], self.r[site + 1]],
+            #     [[-1, -2, 1], [1, -3, -4]],
+            # )
+
+            # self.r[site] = ncon(
+            #     [self.mpo[site], self.r[site]],
+            #     [[-2, 1, -3, 2], [-1, 1, 2, -4]],
+            # )
+
+            # self.r[site] = ncon(
+            #     [np.conj(self.fine_mps[site]), self.r[site]],
+            #     [[-3, 1, 2], [-1, -2, 1, 2]],
+            # )
+
+    # ADD HERE THE TENSOR CONTRACTIONS THAT UPDATE THE 2-SITE BLOCKS
+    def _leftmost_update(self, left2right:bool = True):
+        new_tensor = ncon(
+            [self.func[0], self.func[1], self.mpo[0], self.mpo[1], self.r[2]],
+            [[1, 2], [2, 4, 5], [1, -1, 1], [3, 4, -2, 6], [5, 6, -3]]
+        )
+
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1] * leg_sizes[2]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+        if left2right:
+            self.opt_mps[0] = left_tensor
+            self.opt_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+        else:
+            self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
+            self.opt_mps[1] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1])],
+                 [[1, 3, 4], [1, 2], [2, 3, 4]])
+        )
+
+    def _rightmost_update(self, left2right:bool = True):
+        new_tensor = ncon(
+            [self.r[self.L - 3], self.func[self.L - 2], self.func[self.L - 1], self.mpo[self.L - 1], self.mpo[self.L]],
+            [[1, 2, -1], [1, 3, 4], [4, 6], [2, 3, -2, 5], [5, 6, -3]]
+        )
+
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+
+        if left2right:
+            self.opt_mps[self.L - 1] = left_tensor
+            self.opt_mps[self.L] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
+        else:
+            self.opt_mps[self.L - 1] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.opt_mps[self.L] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.opt_mps[self.L - 1]), np.conj(self.opt_mps[self. L])],
+                 [[1, 2, 4], [1, 2, 3], [3, 4]])
+        )
+
+    def _inner_update(self, site: int, left2right: bool = True):
+        new_tensor = ncon(
+            [self.r[site - 1], self.func[site], self.func[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
+            [[1, 2, -1], [1, 3, 4], [4, 6, 7], [2, 3, -2, 5], [5, 6, -3, 8], [7, 8, -4]]
+        )
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2] * leg_sizes[3]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+        if left2right:
+            self.opt_mps[0] = left_tensor
+            self.opt_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+        else:
+            self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.opt_mps[1] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.opt_mps[self.L - 1]), np.conj(self.opt_mps[self. L])],
+                 [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
+        )
+
+    def _left_to_right_sweep(self):
+        self._leftmost_update(left2right=True)
+        self._left_envs_update(0)
+
+        for site in range(1, self.L - 2):
+            self._inner_update(site, left2right=True)
+            self._left_envs_update(site)
+
+    def _right_to_left_sweep(self):
+        self._rightmost_update(left2right=False)
+        self._right_envs_update(self.L)
+
+        for site in range(self.L - 1, 0, -1):
+            self._inner_update(site, left2right=False)
+            self._right_envs_update(site)
+
+    def optimize(self):
+        for _ in self.sweeps:
+            self._left_to_right_sweep()
+            self._right_to_left_sweep()
+
+        return self.opt_mps, self.overlap, self.truncation_error
+    
+class ProlongationALS:
+    """
+    DMRG style ALS-based prolongation class. It contains all the machinery to refine a coarse QTT representation of a function
+
+    Args:
+        - coarse_func (np.ndarray): The coarse QTT representation of the target function.
+        - initial_bond_guess (int): The initial maximum bond dimension guess for the MPS.
+        - max_bond_dim (int): The maximum bond dimension alloed in the two site DMRG style procedure
+        - tol (float): Truncation tolerance in the svd steps.
+        - sweeps (int): The number of sweeps to perform. By sweep it is meant a full left to right and then right to
+            left sequence of updates along the MPS.
+    """
+
+    def __init__(
+        self,
+        coarse_func: np.ndarray,
+        initial_bonds_guess:int,
+        max_bond_dim:int,
+        tol: float,
+        sweeps: int,
+    ):
+        
+        self.coarse_mps = deepcopy(coarse_func)
+        self.fine_mps = create_random_mps(len(coarse_func) + 1, initial_bonds_guess, complex_entries=True)
+        self.fine_mps = OrthoOps.to_right_orthogonal(self.fine_mps, dummy_ends=False)
+        self.mpo = Prolongation(len(self.coarse_mps)).build_operator()
+
+
+        self.L = len(self.coarse_mps)
+        self.bonds = [tensor.shape[2] for tensor in self.fine_mps[:self.L + 1]]
+        self.max_chi = max_bond_dim
+        self.tol = tol
+        self.sweeps = sweeps
+        self.overlap = []
+        self.truncation_error = []
+
+    def _initialize_envs(self):
+        """
+        Initializes the left and right environment blocks for the energy expectation value. Only the right blocks are
+        computed here, as the left blocks are computed on the fly during the first left to right sweep. The convention
+        used for the blocks is the following:
+
+            Left blocks:
+
+            psi      -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+                    |  |  |  |       =  |L_0   |  |  |      =  |L_1   |          = ...
+            MPO     |  0--0--0--...     |——————|--0--0--...    |——————|--0--...
+                    |  |  |  |          |      |  |  |         |      |
+            psi_0    -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+
+            Right blocks:
+
+            psi     ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+                         |  |  |  |  =    |  |  |R_n-1 |  =       |  |R_n-2 |
+            MPO     ...--0--0--0  |     --0--0--|——————|     ...--0--|——————|
+                         |  |  |  |       |  |  |      |          |  |      |
+            psi_0   ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+        """
+
+        self.l = np.ndarray(self.L, dtype=object)
+        self.r = np.ndarray(self.L, dtype=object)
+
+        for site in range(self.L, 0, -1):
+            self._right_envs_update(site)
+
+    def _left_envs_update(self, site: int):
+        """Creates/updates the left environment blocks that participate in the energy expectation value from the current
+        MPS and the MPO.
+
+        Args:
+            site (int): Site of the MPS where the left environment block is to be created/updated.
+        """
+        if site == 0:
+            self.l[site] = ncon(
+                [self.coarse_mps[site], self.mpo, np.conj(self.fine_mps[site])],
+                [[1, -1], [1, 2, -2], [2, -3]]
+            )
+
+            # self.l[site] = ncon(
+            #     [self.coarse_mps[site], self.mpo],
+            #     [[1, -1], [1, -3, -2]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], np.conj(self.fine_mps[site])],
+            #     [[-1, -2, 1], [1, -3]],
+            # )
+
+        else:
+            self.l[site] = ncon(
+                [self.l[site - 1], self.coarse_mps[site], self.mpo, np.conj(self.fine_mps[site])],
+                [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
+            )
+
+            # self.l[site] = ncon(
+            #     [self.l[site - 1], self.coarse_mps[site]],
+            #     [[1, -3, -4], [1, -2, -1]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], self.mpo[site]],
+            #     [[-1, 1, 2, -4], [2, 1, -3, -2]],
+            # )
+
+            # self.l[site] = ncon(
+            #     [self.l[site], np.conj(self.fine_mps[site])],
+            #     [[-1, -2, 1, 2], [2, 1, -3]],
+            # )
+
+    def _right_envs_update(self, site: int):
+        """Creates/updates the right environment blocks that participate in the energy expectation value from the
+        current MPS and the MPO.
+
+        Args:
+            site (int): Site of the MPS where the right environment block is to be created/updated.
+        """
+        if site == self.L:
+            self.r[site] = ncon(
+                [self.mpo[site], np.conj(self.coarse_mps[site])],
+                [[-1, 1], [-2, 1]],
+            )
+
+        elif site == self.L - 1:
+            self.r[site] = ncon(
+                [self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site]), self.r[site + 1]],
+                [[-1, 1], [-2, 1, 3, 2], [-3, 3, 4], [2, 4]]
+            )
+            # self.r[site] = ncon(
+            #     [self.coarse_mps[site], self.mpo[site]], [[-1, 1], [-2, 1, -3, -4]]
+            # )
+
+            # self.r[site] = ncon(
+            #     [self.r[site], self.r[site + 1]], [[-1, -2, -3, 1], [1, -4]]
+            # )
+
+            # self.r[site] = ncon(
+            #     [self.r[site], np.conj(self.fine_mps[site])], [[-1, -2, 1, 2], [-3, 1, 2]]
+            # )
+
+        else:
+            self.r[site] = ncon(
+                [self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site]), self.r[site + 1]],
+                [[-1, 2, 1], [-2, 2, 4, 3], [-3, 4, 5], [1, 3, 5]]
+            )
+            # self.r[site] = ncon(
+            #     [self.coarse_mps[site], self.r[site + 1]],
+            #     [[-1, -2, 1], [1, -3, -4]],
+            # )
+
+            # self.r[site] = ncon(
+            #     [self.mpo[site], self.r[site]],
+            #     [[-2, 1, -3, 2], [-1, 1, 2, -4]],
+            # )
+
+            # self.r[site] = ncon(
+            #     [np.conj(self.fine_mps[site]), self.r[site]],
+            #     [[-3, 1, 2], [-1, -2, 1, 2]],
+            # )
+
+    # ADD HERE THE TENSOR CONTRACTIONS THAT UPDATE THE 2-SITE BLOCKS
+    def _leftmost_update(self, left2right:bool = True):
+        new_tensor = ncon(
+            [self.coarse_mps[0], self.coarse_mps[1], self.mpo[0], self.mpo[1], self.r[2]],
+            [[1, 2], [2, 4, 5], [1, -1, 1], [3, 4, -2, 6], [5, 6, -3]]
+        )
+
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1] * leg_sizes[2]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+        if left2right:
+            self.fine_mps[0] = left_tensor
+            self.fine_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+        else:
+            self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
+            self.fine_mps[1] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.fine_mps[0]), np.conj(self.fine_mps[1])],
+                 [[1, 3, 4], [1, 2], [2, 3, 4]])
+        )
+
+    def _rightmost_update(self, left2right:bool = True):
+        new_tensor = ncon(
+            [self.r[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 1], self.mpo[self.L]],
+            [[1, 2, -1], [1, 3], [2, 3, -2, 4], [4, -3]]
+        )
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+
+        if left2right:
+            self.fine_mps[self.L - 1] = left_tensor
+            self.fine_mps[self.L] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
+        else:
+            self.fine_mps[self.L - 1] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.fine_mps[self.L] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
+                 [[1, 2, 4], [1, 2, 3], [3, 4]])
+        )
+
+    def _second_rightmost_update(self, left2right:bool = True):
+        new_tensor = ncon(
+            [self.r[self.L - 3], self.coarse_mps[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 2], self.mpo[self.L - 1], self.r[self.L]],
+            [[1, 2, -1], [1, 3, 4], [4, 6], [2, 3, -2, 5], [5, 6, -3, 7], [7, -4]]
+        )
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2] * leg_sizes[3]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+        if left2right:
+            self.fine_mps[0] = left_tensor
+            self.fine_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+        else:
+            self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.fine_mps[1] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
+                 [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
+        )
+
+    def _inner_update(self, site: int, left2right: bool = True):
+        new_tensor = ncon(
+            [self.r[site - 1], self.coarse_mps[site], self.coarse_mps[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
+            [[1, 2, -1], [1, 3, 4], [4, 6, 7], [2, 3, -2, 5], [5, 6, -3, 8], [7, 8, -4]]
+        )
+        leg_sizes = new_tensor.shape
+
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2] * leg_sizes[3]))
+        u, s, v = la.svd(new_tensor, full_matrices=False)
+
+        stemp_cumsum = np.cumsum(s)
+        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
+        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        self.truncation_error.append(np.sum(s[chitemp:]))
+
+        if left2right:
+            self.fine_mps[0] = left_tensor
+            self.fine_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+        else:
+            self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.fine_mps[1] = right_tensor
+
+        self.overlap.append(
+            ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
+                 [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
+        )
+
+    def _left_to_right_sweep(self):
+        self._leftmost_update(left2right=True)
+        self._left_envs_update(0)
+
+        for site in range(1, self.L - 2):
+            self._inner_update(site, left2right=True)
+            self._left_envs_update(site)
+
+        self._second_rightmost_update(left2right=True)
+        self._left_envs_update(self.L - 2)
+
+    def _right_to_left_sweep(self):
+        self._rightmost_update(left2right=False)
+        self._right_envs_update(self.L)
+
+        for site in range(self.L - 1, 0, -1):
+            self._inner_update(site, left2right=False)
+            self._right_envs_update(site)
+
+    def optimize(self):
+        for _ in self.sweeps:
+            self._left_to_right_sweep()
+            self._right_to_left_sweep()
+
+        return self.fine_mps, self.overlap, self.truncation_error
+        
+
+class TimeEvolveALS:
+    pass
+
+
+

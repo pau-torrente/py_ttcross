@@ -478,9 +478,21 @@ class tt_interpolator(ABC):
             )
 
         return result[0]
-            
-        
+    
 
+    def _contract_inverses(self):
+        """
+        Helper method that contract the inverses into the neighboring tensors to obtain an MPS without inner blocks
+        """
+        for site in range(self.num_variables - 1):
+            u, s, v = svd(self.mps[2 * site + 1])
+            sqrt_s = np.sqrt(s)
+            u = ncon([u, sqrt_s], [[-1, 1], [1, -2]])
+            v = ncon([sqrt_s, v], [[-1, 1], [1, -2]])
+
+            self.mps[2 * site] = ncon([self.mps[2 * site], u], [[-1, -2, 1], [1, -3]])
+            self.mps[2 * (site + 1)] = ncon([v, self.mps[2 * (site + 1)]], [[-1, 1], [1, -2, -3]])
+            
     @abstractmethod
     def run(self) -> np.ndarray:
         """Run the full algorithm, performing full sweeps until convergence or the maximum number of sweeps is reached.
@@ -1057,7 +1069,8 @@ class ttrc(tt_interpolator):
             mps[-1] = self.compute_single_site_tensor(self.num_variables - 1)
             self.mps = mps
             self.total_time = time.time() - self.total_time
-        
+
+        self._contract_inverses()
         return self.mps
 
 
@@ -1304,5 +1317,7 @@ class greedy_cross(tt_interpolator):
 
             self.mps = mps
             self.total_time = time.time() - self.total_time
+
+            self._contract_inverses()
             
         return self.mps
