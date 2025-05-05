@@ -109,12 +109,12 @@ class one_dim_function_interpolator(ABC):
         )
 
         for i in range(1, self.d):
-            result = ncon(
-                [result, interpolation_tensors[2 * i - 1]],
-                [[1], [1, -1]],
-            )
+            # result = ncon(
+            #     [result, interpolation_tensors[2 * i - 1]],
+            #     [[1], [1, -1]],
+            # )
 
-            result = ncon([result, interpolation_tensors[2 * i]], [[1], [1, -1, -2]])
+            result = ncon([result, interpolation_tensors[i]], [[1], [1, -1, -2]])
 
             result = ncon(
                 [contr_tensors[i], result],

@@ -1,6 +1,8 @@
+from copy import deepcopy
 import sys
 from abc import ABC, abstractmethod
 import numpy as np
+from sympy import comp
 from py_ttcross.utils.maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
@@ -11,6 +13,7 @@ import numba as nb
 
 # Helper function that is compiled using numba outside the class to reduce the execution time of the superblock tensor
 # computation, which is the most expensive part of the algorithm.
+
 
 @nb.njit()
 def compute_superblock_tensor(i: np.ndarray, j: np.ndarray, g1: np.ndarray, g2: np.ndarray, site: int):
@@ -34,9 +37,9 @@ def compute_superblock_tensor(i: np.ndarray, j: np.ndarray, g1: np.ndarray, g2: 
         for k in range(len(j)):
             right = j[k]
             for m in range(len(g1)):
-                i_1 = np.array([g1[m]], dtype = np.float64)
+                i_1 = np.array([g1[m]], dtype=np.float64)
                 for n in range(len(g2)):
-                    i_2 = np.array([g2[n]], dtype = np.float64)
+                    i_2 = np.array([g2[n]], dtype=np.float64)
 
                     # And as in the single-site tensor, we consider if we are at the first site, the last site or in
                     # the bulk to avoid adding the dummy index at the start or end of the self.i and self.j sets,
@@ -78,20 +81,20 @@ class tt_interpolator(ABC):
 
     Args:
         - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
-        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which 
+        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which
         can be numba jit compiled.
-        
+
         - num_variables (int): The number of variables of the grid on which the function is defined.
-        
+
         - grid (np.ndarray): The grid on which the function is defined. It must be a numpy array of len = num_variables.
             The number of points in each dimension of the grid can be different.
-            
+
         - tol (float): Tolerance for the pivot finding algorithm.
-        
+
         - sweeps (int): Number of sweeps to perform.
-        
+
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
-        
+
         - pivot_initialization (str, optional): The way in which the initial pivots are selected. It can be either
         "random" or "first_n". Defaults to "random".
 
@@ -104,8 +107,8 @@ class tt_interpolator(ABC):
         grid: np.ndarray,
         tol: float,
         sweeps: int,
-        is_f_complex:bool=False,
-        pivot_initialization:str = "random"
+        is_f_complex: bool = False,
+        pivot_initialization: str = "random",
     ) -> None:
         self.func = func
         if len(grid) != num_variables:
@@ -114,10 +117,10 @@ class tt_interpolator(ABC):
         self.grid = grid
         self.tol = tol
         self.sweeps = sweeps
-        
+
         if pivot_initialization not in ["random", "first_n"]:
             raise ValueError("Pivot initialization must be either 'random' or 'first_n'.")
-        
+
         self.pivot_init = pivot_initialization
 
         self.f_type = np.complex128 if is_f_complex else np.float64
@@ -127,23 +130,22 @@ class tt_interpolator(ABC):
         self.bonds[-1] = 1
         self.super_block_time = 0
         self.func_calls = 0
-        
+
         # If the function can be compiled with numba, we compile it and use the compiled version to compute the
         # superblock tensor. If it cannot be compiled, we use the non-compiled version.
         try:
             # Set the int_function as a global variable such that the external superblock tensor generator can call it
             global int_function
-            int_function = nb.jit(nopython = True)(func)
+            int_function = nb.jit(nopython=True)(func)
             self.compute_superblock_tensor = self._compute_superblock_tensor_compiled
             print("Function successfully compiled with numba.")
-        
+
         except:
             self.func = func
             self.compute_superblock_tensor = self._compute_superblock_tensor_non_compiled
             print("Function not compiled with numba. Using non-compiled version.")
-        
+
         self.mps = None
-            
 
     def _obtain_superblock_total_indices(
         self, site: int, compute_index_pos: bool = True
@@ -309,45 +311,44 @@ class tt_interpolator(ABC):
         Returns:
             np.ndarray: The 2-legged tensor that is the inverse of the cross block tensor.
         """
-        
+
         dif = len(self.i[site + 1]) - len(self.j[site])
         dif_in_i = True if dif > 0 else False
-        
+
         if dif != 0:
             warnings.warn(
                 f"The left and right indexes must have the same dimension at position {site}. {"I" if dif_in_i else "J"} has {abs(dif)} more elements than {"J" if dif_in_i else "I"} which have been discarded to compute the inverse block."
             )
 
-
         # Run over all the points in the set (I_{k}, J_{k}) to compute the block A(I_{k}, J_{k}) and then invert it.
-        
+
         if dif == 0:
             block = np.ndarray((len(self.i[site + 1]), len(self.j[site])), dtype=self.f_type)
 
             for s, left in enumerate(self.i[site + 1]):
                 for k, right in enumerate(self.j[site]):
                     block[s, k] = self.func(np.concatenate((left, right)).astype(float))
-          
+
         else:
             block = np.ndarray(
                 (
-                    len(self.i[site + 1])-abs(dif) if dif_in_i else len(self.i[site + 1]), 
-                    len(self.j[site]) if dif_in_i else len(self.j[site])-abs(dif),
-                ), 
-                dtype=self.f_type
+                    len(self.i[site + 1]) - abs(dif) if dif_in_i else len(self.i[site + 1]),
+                    len(self.j[site]) if dif_in_i else len(self.j[site]) - abs(dif),
+                ),
+                dtype=self.f_type,
             )
-       
-            for s, left in enumerate(self.i[site + 1][:-abs(dif)] if dif_in_i else self.i[site + 1]):
-                for k, right in enumerate(self.j[site] if dif_in_i else self.j[site][:-abs(dif)]):
+
+            for s, left in enumerate(self.i[site + 1][: -abs(dif)] if dif_in_i else self.i[site + 1]):
+                for k, right in enumerate(self.j[site] if dif_in_i else self.j[site][: -abs(dif)]):
                     block[s, k] = self.func(np.concatenate((left, right)).astype(float))
 
         inv_block = np.linalg.inv(block)
 
         return inv_block
-    
+
     def _compute_superblock_tensor_compiled(self, site: int) -> np.ndarray:
         """Helper method that calls the compiled external compute_superblock_tensor function to compute the superblock
-        tensor. It is the most expensive part of the algorithm. When the function can indeed be jit compiled, this 
+        tensor. It is the most expensive part of the algorithm. When the function can indeed be jit compiled, this
         method is called to compute the superblock tensor.
 
         Args:
@@ -356,9 +357,9 @@ class tt_interpolator(ABC):
         Returns:
             np.ndarray: _description_
         """
-        
+
         time1 = time.time()
-        
+
         if site == 0:
             s = 0
         elif site == self.num_variables - 1:
@@ -376,7 +377,7 @@ class tt_interpolator(ABC):
         self.func_calls += np.prod(tensor.shape)
 
         self.super_block_time += time.time() - time1
-        
+
         return tensor
 
     def _compute_superblock_tensor_non_compiled(self, site: int) -> np.ndarray:
@@ -384,7 +385,7 @@ class tt_interpolator(ABC):
         A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) used to update the index sets in the tensor train in DMRG-like procedures.
         It is the most expensive part of the algorithm. This method is called whenever the function cannot be compiled
         with numba.
-        
+
         Args:
             site (int): The site of the left physical leg of the superblock tensor.
 
@@ -420,10 +421,10 @@ class tt_interpolator(ABC):
         self.super_block_time += time.time() - time1
 
         return tensor
-    
+
     def _eval_contraction_tensors(self, x: np.ndarray) -> np.ndarray:
         # TODO THIS IS AN EXPERIMENTAL METHOD THAT REQUIRES THE GRID TO HAVE THE SAME NUMBER OF POINT IN EACH DIMENSION
-        
+
         """Method that creates the array of vectors that must be contracted into the free legs of the tensors in the
         tensor train interpolation to evaluate the function in a point x.
 
@@ -439,7 +440,7 @@ class tt_interpolator(ABC):
         contraction_tensors = np.zeros_like(self.grid)
         contraction_tensors[np.arange(self.grid.shape[0]), indices] = 1
         return contraction_tensors
-    
+
     def eval(self, x: np.ndarray) -> np.float_ | np.complex_:
         """Method to evaluate the function in a point x in the interval from the tensor train interpolation
 
@@ -455,9 +456,9 @@ class tt_interpolator(ABC):
         """
         if self.mps is None:
             raise ValueError("The tensor train has not been computed yet. Execute the run method first.")
-        
+
         contr_tensors = self._eval_contraction_tensors(x)
-                
+
         result = self.mps[0][0]
         result = ncon(
             [contr_tensors[0], result],
@@ -465,12 +466,12 @@ class tt_interpolator(ABC):
         )
 
         for i in range(1, self.num_variables):
-            result = ncon(
-                [result, self.mps[2 * i - 1]],
-                [[1], [1, -1]],
-            )
+            # result = ncon(
+            #     [result, self.mps[2 * i - 1]],
+            #     [[1], [1, -1]],
+            # )
 
-            result = ncon([result, self.mps[2 * i]], [[1], [1, -1, -2]])
+            result = ncon([result, self.mps[i]], [[1], [1, -1, -2]])
 
             result = ncon(
                 [contr_tensors[i], result],
@@ -478,21 +479,49 @@ class tt_interpolator(ABC):
             )
 
         return result[0]
-    
 
     def _contract_inverses(self):
         """
         Helper method that contract the inverses into the neighboring tensors to obtain an MPS without inner blocks
         """
+        # u, s, v = svd(self.mps[1])
+        # sqrt_s = np.diag(np.sqrt(s))
+        # u = ncon([u, sqrt_s], [[-1, 1], [1, -2]])
+        # v = ncon([sqrt_s, v], [[-1, 1], [1, -2]])
+
+        # self.mps[0] = ncon([self.mps[0], u], [[-1, -2, 1], [1, -3]])
+        # self.mps[2] = ncon([v, self.mps[2]], [[-1, 1], [1, -2, -3]])
+
+        compact_mps = np.ndarray(self.num_variables, dtype=object)
+
+        for i in range(self.num_variables):
+            # Ensure you are taking the correct elements from the TTCD mps
+            compact_mps[i] = self.mps[2 * i].copy()
+
         for site in range(self.num_variables - 1):
-            u, s, v = svd(self.mps[2 * site + 1])
-            sqrt_s = np.sqrt(s)
+            inverse_block = self.mps[2 * site + 1]
+
+            u, s, v = svd(inverse_block)
+            sqrt_s = np.diag(np.sqrt(s))
             u = ncon([u, sqrt_s], [[-1, 1], [1, -2]])
             v = ncon([sqrt_s, v], [[-1, 1], [1, -2]])
 
-            self.mps[2 * site] = ncon([self.mps[2 * site], u], [[-1, -2, 1], [1, -3]])
-            self.mps[2 * (site + 1)] = ncon([v, self.mps[2 * (site + 1)]], [[-1, 1], [1, -2, -3]])
-            
+            current_tensor_A = compact_mps[site]
+            current_tensor_B = compact_mps[site + 1]
+
+            compact_mps[site] = ncon([current_tensor_A, u], [[-1, -2, 1], [1, -3]])
+            compact_mps[site + 1] = ncon([v, current_tensor_B], [[-1, 1], [1, -2, -3]])
+
+        self.mps = compact_mps
+
+        # u, s, v = svd(self.mps[-2])
+        # sqrt_s = np.diag(np.sqrt(s))
+        # u = ncon([u, sqrt_s], [[-1, 1], [1, -2]])
+        # v = ncon([sqrt_s, v], [[-1, 1], [1, -2]])
+
+        # self.mps[-3] = ncon([self.mps[-3], u], [[-1, -2, 1], [1, -3]])
+        # self.mps[-1] = ncon([v, self.mps[-1]], [[-1, 1], [1, -2, -3]])
+
     @abstractmethod
     def run(self) -> np.ndarray:
         """Run the full algorithm, performing full sweeps until convergence or the maximum number of sweeps is reached.
@@ -534,7 +563,7 @@ class ttrc(tt_interpolator):
 
     Args:
         - func (FunctionType): The function to be interpolated. It must be a function that takes a numpy array as input
-        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which can 
+        and returns a float or complex number. For speed purposes, it is highly recommended to pass a function which can
         be numba jit compiled.
 
         - num_variables (int): The number of variables of the grid on which the function is defined.
@@ -558,7 +587,7 @@ class ttrc(tt_interpolator):
         - max_bond (int): Maximum bond dimension allowed in the algorithm. Must be larger than the initial_bond_guess.
 
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
-        
+
         - pivot_initialization (str, optional): The way in which the initial pivots are selected. It can be either
         "random" or "first_n". Defaults to "random".
     """
@@ -574,7 +603,7 @@ class ttrc(tt_interpolator):
         initial_bond_guess: int,
         max_bond: int,
         is_f_complex=False,
-        pivot_initialization:str = "random"
+        pivot_initialization: str = "random",
     ) -> None:
         super().__init__(func, num_variables, grid, maxvol_tol, sweeps, is_f_complex, pivot_initialization)
 
@@ -596,7 +625,7 @@ class ttrc(tt_interpolator):
         # When picking the initial index sets at random, we can fall into numpy erros easily (this also
         # happens in the deterministic case). With the folloing while loop, we make sure that the initial index sets
         # do not raise error and if they do, we repeat the initialization process.
-        
+
         check_initialization_singularity = True
 
         time1 = time.time()
@@ -752,7 +781,7 @@ class ttrc(tt_interpolator):
                 times = len(current_index) // len(self.j[k + 1])
                 previous_choice = np.column_stack(([self.j[k + 1] for _ in range(times + 1)]))
                 self.j[k] = np.column_stack((current_index, previous_choice[: len(current_index)]))
-                
+
     def _create_initial_index_sets(self) -> None:
         """Helper method to call the pivot initialization methods depending on if the user wants to initialize the
         pivots at random or by taking the first n points in each dimension of the grid.
@@ -763,7 +792,6 @@ class ttrc(tt_interpolator):
             self._create_initial_index_sets_firstn()
         else:
             raise ValueError("Pivot initialization must be either 'random' or 'first_n'.")
-            
 
     def _create_initial_bond_dimensions(self) -> None:
         """Method that initializes the bond dimensions for all the sites in the tensor train. The bond dimensions are
@@ -888,7 +916,7 @@ class ttrc(tt_interpolator):
         """
 
         # Compute the superblock tensor C = A(I_{k-1}, i_k, i_{k+1}, J_{k+1}) at site k and store the bond dimensions.
-            
+
         C = self.compute_superblock_tensor(site)
         r_left = C.shape[0]
         r_right = C.shape[3]
@@ -1004,7 +1032,9 @@ class ttrc(tt_interpolator):
         # Obtain the total indices set J_{k+1}⊗i_{k+1} for the current site k and perfrom the maxvol
         # to update the index set I at site "site".
         _, J_k_1_expanded = self._obtain_superblock_total_indices(site, compute_index_pos=False)
-        best_indices, self.j[site] = py_maxvol(A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=100000)
+        best_indices, self.j[site] = py_maxvol(
+            A=vtemp, full_index_set=J_k_1_expanded, tol=1 + self.tol, max_iters=100000
+        )
 
         # Update the P matrix to the right of the current site and to the left of site+1 with the selected rows from the
         # left matrix of the SVD.
@@ -1017,9 +1047,9 @@ class ttrc(tt_interpolator):
 
         for site in range(self.num_variables - 2, -1, -1):
             self.right_left_update(site)
-            
+
     def check_index_sets(self):
-        """At the end of the algorithm, checks if all the index sets I_k and J_k have the same size in order to build 
+        """At the end of the algorithm, checks if all the index sets I_k and J_k have the same size in order to build
         inverse blocks that form the approximation. If they don't, the method discards the last pivots in the index
         sets, either in I or J, in order to make them the same size.
         """
@@ -1029,11 +1059,11 @@ class ttrc(tt_interpolator):
         for site in range(self.num_variables - 1):
             dif = len(self.i[site + 1]) - len(self.j[site])
             dif_in_i = True if dif > 0 else False
-            
+
             if dif != 0:
                 self.i[site + 1] = self.i[site + 1][: -abs(dif)] if dif_in_i else self.i[site + 1]
                 self.j[site] = self.j[site][: -abs(dif)] if not dif_in_i else self.j[site]
-                
+
     def run(self) -> np.ndarray:
         """Run the full algorithm, performing the initial sweep and then the full sweeps until convergence or the
         maximum number of sweeps is reached. After the index sets are updated, the final tensor train built using the
@@ -1061,7 +1091,7 @@ class ttrc(tt_interpolator):
             mps = np.ndarray(2 * self.num_variables - 1, dtype=np.ndarray)
 
             self.check_index_sets()
-            
+
             for site in range(self.num_variables - 1):
                 mps[2 * site] = self.compute_single_site_tensor(site)
                 mps[2 * site + 1] = self.compute_cross_blocks(site)
@@ -1098,7 +1128,7 @@ class greedy_cross(tt_interpolator):
         - sweeps (int): Number of sweeps to perform.
 
         - is_f_complex (bool, optional): Whether the function is complex or not. Defaults to False.
-        
+
         - pivot_initialization (str, optional): The method used to initialize the pivots at each site. It can be either
             'random' or 'first_n'. Defaults to 'random'.
     """
@@ -1112,7 +1142,7 @@ class greedy_cross(tt_interpolator):
         max_bond: int,
         sweeps: int,
         is_f_complex=False,
-        pivot_initialization:str="random",
+        pivot_initialization: str = "random",
     ) -> None:
         super().__init__(func, num_variables, grid, tol, sweeps, is_f_complex, pivot_initialization)
         self.max_bond = max_bond
@@ -1142,14 +1172,14 @@ class greedy_cross(tt_interpolator):
                 except np.linalg.LinAlgError:
                     self._create_initial_index_sets()
                     tries += 1
-                    
+
                 if tries == 1000:
                     raise ValueError("Initialization failed after 1000 tries. Try again.")
         else:
             try:
                 for site in range(self.num_variables - 1):
                     _ = self.compute_cross_blocks(site)
-            
+
             except np.linalg.LinAlgError:
                 raise ValueError(
                     "Initialization with the first n points results in singular matrices. Try with the random initialization."
@@ -1209,7 +1239,7 @@ class greedy_cross(tt_interpolator):
         for i in range(-3, -self.num_variables - 1, -1):
             current_index = np.array([self.grid[i + 1][0]])
             self.j[i] = np.column_stack((current_index, self.j[i + 1]))
-            
+
     def _create_initial_index_sets(self) -> None:
         """Helper method to call the pivot initialization methods depending on if the user wants to initialize the
         pivots at random or by taking the first n points in each dimension of the grid.
@@ -1247,9 +1277,9 @@ class greedy_cross(tt_interpolator):
             return
 
         # Compute the superblock tensor at site k and reshape it to a matrix.
-            
+
         superblock_tensor = self.compute_superblock_tensor(site)
-        
+
         superblock_tensor = np.reshape(
             superblock_tensor,
             (
@@ -1295,7 +1325,7 @@ class greedy_cross(tt_interpolator):
             np.ndarray: The tensor train that contains the ttcross approximation to the tensor related to evaluating
             the function at all the grid points.
         """
-        
+
         if self.mps is None:
             self.total_time = time.time()
             for s in range(self.sweeps):
@@ -1318,6 +1348,6 @@ class greedy_cross(tt_interpolator):
             self.mps = mps
             self.total_time = time.time() - self.total_time
 
-            self._contract_inverses()
-            
+        self._contract_inverses()
+
         return self.mps
