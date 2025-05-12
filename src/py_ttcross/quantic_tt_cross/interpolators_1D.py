@@ -102,13 +102,13 @@ class one_dim_function_interpolator(ABC):
 
         # Contract the tensors to evaluate the function in the point x in order going from left to right in the tensor
         # train to be as efficient as possible. Finally, return the value of the function in the point x.
-        result = interpolation_tensors[0][0]
+        result = interpolation_tensors[0]
         result = ncon(
             [contr_tensors[0], result],
             [[1], [1, -1]],
         )
 
-        for i in range(1, self.d):
+        for i in range(1, self.d - 1):
             # result = ncon(
             #     [result, interpolation_tensors[2 * i - 1]],
             #     [[1], [1, -1]],
@@ -121,12 +121,42 @@ class one_dim_function_interpolator(ABC):
                 [[1], [1, -1]],
             )
 
-        return result[0]
+        result = ncon([result, interpolation_tensors[-1]], [[1], [1, -1]])
 
-    @abstractmethod
-    def interpolate(self, *args, **kwargs) -> None:
-        """Method that call the desired interpolator to interpolate the function in the interval using a binary grid."""
+        result = ncon(
+            [result, contr_tensors[-1]],
+            [[1], [1]]
+        )
 
+        return result
+
+    # @abstractmethod
+    # def interpolate(self, *args, **kwargs) -> None:
+    #     """Method that call the desired interpolator to interpolate the function in the interval using a binary grid."""
+
+    @property
+    def mps(self):
+        return self.interpolation
+    
+    @mps.setter
+    def mps(self, value:np.ndarray):
+        self.interpolation = value
+
+    @classmethod
+    def load_mps(cls, mps: np.ndarray, interval: list, complex_func: bool):
+        d = len(mps)
+        n = 2**d
+        h = (interval[1] - interval[0]) / n
+        grid = np.array(
+            [[0, 1] for _ in range(d)],
+            dtype=np.float64,
+        )
+
+        interpolator = one_dim_function_interpolator(func=None, interval=interval, d=d, complex_function=complex_func)
+        interpolator.mps = mps
+        interpolator.interpolated = True
+
+        return interpolator
 
 class greedy_one_dim_func_interpolator(one_dim_function_interpolator):
     """Class representing a one-dimensional function interpolator that uses the ttcross greedy interpolator."""

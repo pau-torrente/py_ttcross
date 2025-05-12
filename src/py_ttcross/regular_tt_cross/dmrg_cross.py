@@ -1,8 +1,6 @@
 from copy import deepcopy
-import sys
 from abc import ABC, abstractmethod
 import numpy as np
-from sympy import comp
 from py_ttcross.utils.maxvol import greedy_pivot_finder, py_maxvol
 from types import FunctionType
 from ncon import ncon
@@ -1101,6 +1099,10 @@ class ttrc(tt_interpolator):
             self.total_time = time.time() - self.total_time
 
         self._contract_inverses()
+
+        self.mps[0] = self.mps[0][0, :, :]
+        self.mps[-1] = self.mps[-1][:, :, 0]
+        
         return self.mps
 
 
@@ -1349,5 +1351,7 @@ class greedy_cross(tt_interpolator):
             self.total_time = time.time() - self.total_time
 
         self._contract_inverses()
+        self.mps[0] = self.mps[0][0, :, :]
+        self.mps[-1] = self.mps[-1][:, :, 0]
 
         return self.mps

@@ -112,12 +112,8 @@ class Prolongation:
         self.build_operator()
 
     def _build_leftmost_tensor(self):
-        left = np.zeros(2)
-        left[0] = 1.0
-
-        second = self._build_innner_tensor()
-
-        return ncon([left, second], [[1], [1, -1, -2, -3]])
+        tensor = self._build_innner_tensor()
+        return tensor[0, :, :, :]
     
     def _build_innner_tensor(self):
         tens = np.zeros((2,2,2,2))
@@ -129,8 +125,10 @@ class Prolongation:
     
     def _build_rightmost_tensor(self):
         tens = np.zeros((2,2))
-        tens[0, 1] = 1.0
-        tens[1, 1] = 1.0
+        tens[0, 0] = 1.0
+        tens[0, 1] = 0.5
+        tens[1, 1] = 0.5
+        return tens
 
     def build_operator(self):
         self.prolong_mpo = np.ndarray(self.L + 1, dtype=np.ndarray)

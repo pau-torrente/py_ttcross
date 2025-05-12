@@ -128,7 +128,7 @@ class OrthoOps:
             raise ValueError("Given sites must be an integer less than the number of sites minus one. ")
 
         for i in range(nstop):
-            if i == 0 and not dummy_ends:
+            if i == 0 and dummy_ends:
                 tensors[i], s_matrix = left_orthogonalize_tensor(tensors[i], dtol, left_leg=False)
             else:
                 tensors[i], s_matrix = left_orthogonalize_tensor(tensors[i], dtol, left_leg=True)
@@ -188,7 +188,11 @@ class OrthoOps:
                 tensors[i], s_matrix = right_orthogonalize_tensor(tensors[i], dtol, right_leg=True)
 
             weight_list.append(s_matrix) if get_matrices else None
-            tensors[i - 1] = ncon([tensors[i - 1], s_matrix], [[-1, -2, 1], [1, -3]])
+            tensors[i - 1] = (
+                ncon([tensors[i - 1], s_matrix], [[-1, 1], [1, -2]])
+                if i == -nstop + 1 and not dummy_ends
+                else ncon([tensors[i - 1], s_matrix], [[-1, -2, 1], [1, -3]])
+            )
 
         if normalize:
             norm = (

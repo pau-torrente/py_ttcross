@@ -1,10 +1,8 @@
-from ast import Not
-from types import FunctionType
 from copy import deepcopy
 import numpy as np
 from scipy import linalg as la
 from ncon import ncon
-from .operators import Prolongation, Laplacian
+from .operators import Prolongation, OneDimHeatEqEvolver, OneDimLaplacian
 from ..tns.mps_operations import OrthoOps
 from ..tns.mps import create_random_mps
 
@@ -36,6 +34,7 @@ class ALS:
     ):
         self.func = func
         self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=True)
+
         self.opt_mps = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
         self.mpo = operator
         self.L = len(self.func)
@@ -303,18 +302,21 @@ class ProlongationALS:
     ):
         
         self.coarse_mps = deepcopy(coarse_func)
+
         self.fine_mps = create_random_mps(len(coarse_func) + 1, initial_bonds_guess, complex_entries=True)
-        self.fine_mps = OrthoOps.to_right_orthogonal(self.fine_mps, dummy_ends=False)
+
+        self.fine_mps, _ = OrthoOps.to_right_orthogonal(self.fine_mps, dummy_ends=False)
         self.mpo = Prolongation(len(self.coarse_mps)).build_operator()
 
 
         self.L = len(self.coarse_mps)
-        self.bonds = [tensor.shape[2] for tensor in self.fine_mps[:self.L + 1]]
+        self.bonds = [tensor.shape[-1] for tensor in self.fine_mps[:self.L + 1]]
         self.max_chi = max_bond_dim
         self.tol = tol
         self.sweeps = sweeps
         self.overlap = []
         self.truncation_error = []
+        self._initialize_envs()
 
     def _initialize_envs(self):
         """
@@ -339,8 +341,8 @@ class ProlongationALS:
             psi_0   ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
         """
 
-        self.l = np.ndarray(self.L, dtype=object)
-        self.r = np.ndarray(self.L, dtype=object)
+        self.l = np.ndarray(self.L + 1, dtype=object)
+        self.r = np.ndarray(self.L + 1, dtype=object)
 
         for site in range(self.L, 0, -1):
             self._right_envs_update(site)
@@ -354,40 +356,15 @@ class ProlongationALS:
         """
         if site == 0:
             self.l[site] = ncon(
-                [self.coarse_mps[site], self.mpo, np.conj(self.fine_mps[site])],
+                [self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site])],
                 [[1, -1], [1, 2, -2], [2, -3]]
             )
 
-            # self.l[site] = ncon(
-            #     [self.coarse_mps[site], self.mpo],
-            #     [[1, -1], [1, -3, -2]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1], [1, -3]],
-            # )
-
         else:
             self.l[site] = ncon(
-                [self.l[site - 1], self.coarse_mps[site], self.mpo, np.conj(self.fine_mps[site])],
+                [self.l[site - 1], self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site])],
                 [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
             )
-
-            # self.l[site] = ncon(
-            #     [self.l[site - 1], self.coarse_mps[site]],
-            #     [[1, -3, -4], [1, -2, -1]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], self.mpo[site]],
-            #     [[-1, 1, 2, -4], [2, 1, -3, -2]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1, 2], [2, 1, -3]],
-            # )
 
     def _right_envs_update(self, site: int):
         """Creates/updates the right environment blocks that participate in the energy expectation value from the
@@ -398,7 +375,7 @@ class ProlongationALS:
         """
         if site == self.L:
             self.r[site] = ncon(
-                [self.mpo[site], np.conj(self.coarse_mps[site])],
+                [self.mpo[site], np.conj(self.fine_mps[site])],
                 [[-1, 1], [-2, 1]],
             )
 
@@ -407,43 +384,17 @@ class ProlongationALS:
                 [self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site]), self.r[site + 1]],
                 [[-1, 1], [-2, 1, 3, 2], [-3, 3, 4], [2, 4]]
             )
-            # self.r[site] = ncon(
-            #     [self.coarse_mps[site], self.mpo[site]], [[-1, 1], [-2, 1, -3, -4]]
-            # )
-
-            # self.r[site] = ncon(
-            #     [self.r[site], self.r[site + 1]], [[-1, -2, -3, 1], [1, -4]]
-            # )
-
-            # self.r[site] = ncon(
-            #     [self.r[site], np.conj(self.fine_mps[site])], [[-1, -2, 1, 2], [-3, 1, 2]]
-            # )
 
         else:
             self.r[site] = ncon(
                 [self.coarse_mps[site], self.mpo[site], np.conj(self.fine_mps[site]), self.r[site + 1]],
                 [[-1, 2, 1], [-2, 2, 4, 3], [-3, 4, 5], [1, 3, 5]]
             )
-            # self.r[site] = ncon(
-            #     [self.coarse_mps[site], self.r[site + 1]],
-            #     [[-1, -2, 1], [1, -3, -4]],
-            # )
 
-            # self.r[site] = ncon(
-            #     [self.mpo[site], self.r[site]],
-            #     [[-2, 1, -3, 2], [-1, 1, 2, -4]],
-            # )
-
-            # self.r[site] = ncon(
-            #     [np.conj(self.fine_mps[site]), self.r[site]],
-            #     [[-3, 1, 2], [-1, -2, 1, 2]],
-            # )
-
-    # ADD HERE THE TENSOR CONTRACTIONS THAT UPDATE THE 2-SITE BLOCKS
     def _leftmost_update(self, left2right:bool = True):
         new_tensor = ncon(
             [self.coarse_mps[0], self.coarse_mps[1], self.mpo[0], self.mpo[1], self.r[2]],
-            [[1, 2], [2, 4, 5], [1, -1, 1], [3, 4, -2, 6], [5, 6, -3]]
+            [[1, 2], [2, 4, 5], [1, -1, 3], [3, 4, -2, 6], [5, 6, -3]]
         )
 
         leg_sizes = new_tensor.shape
@@ -465,6 +416,7 @@ class ProlongationALS:
             self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
             self.fine_mps[1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
         self.overlap.append(
             ncon([new_tensor, np.conj(self.fine_mps[0]), np.conj(self.fine_mps[1])],
                  [[1, 3, 4], [1, 2], [2, 3, 4]])
@@ -472,7 +424,7 @@ class ProlongationALS:
 
     def _rightmost_update(self, left2right:bool = True):
         new_tensor = ncon(
-            [self.r[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 1], self.mpo[self.L]],
+            [self.l[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 1], self.mpo[self.L]],
             [[1, 2, -1], [1, 3], [2, 3, -2, 4], [4, -3]]
         )
         leg_sizes = new_tensor.shape
@@ -495,6 +447,7 @@ class ProlongationALS:
             self.fine_mps[self.L - 1] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
             self.fine_mps[self.L] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
         self.overlap.append(
             ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
                  [[1, 2, 4], [1, 2, 3], [3, 4]])
@@ -502,7 +455,7 @@ class ProlongationALS:
 
     def _second_rightmost_update(self, left2right:bool = True):
         new_tensor = ncon(
-            [self.r[self.L - 3], self.coarse_mps[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 2], self.mpo[self.L - 1], self.r[self.L]],
+            [self.l[self.L - 3], self.coarse_mps[self.L - 2], self.coarse_mps[self.L - 1], self.mpo[self.L - 2], self.mpo[self.L - 1], self.r[self.L]],
             [[1, 2, -1], [1, 3, 4], [4, 6], [2, 3, -2, 5], [5, 6, -3, 7], [7, -4]]
         )
         leg_sizes = new_tensor.shape
@@ -518,20 +471,21 @@ class ProlongationALS:
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
-            self.fine_mps[0] = left_tensor
-            self.fine_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+            self.fine_mps[self.L - 2] = left_tensor
+            self.fine_mps[self.L - 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
         else:
-            self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.fine_mps[1] = right_tensor
+            self.fine_mps[self.L - 2] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.fine_mps[self.L - 1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2], leg_sizes[3]))
         self.overlap.append(
-            ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
+            ncon([new_tensor, np.conj(self.fine_mps[self.L - 2]), np.conj(self.fine_mps[self. L - 1])],
                  [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
         )
 
     def _inner_update(self, site: int, left2right: bool = True):
         new_tensor = ncon(
-            [self.r[site - 1], self.coarse_mps[site], self.coarse_mps[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
+            [self.l[site - 1], self.coarse_mps[site], self.coarse_mps[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
             [[1, 2, -1], [1, 3, 4], [4, 6, 7], [2, 3, -2, 5], [5, 6, -3, 8], [7, 8, -4]]
         )
         leg_sizes = new_tensor.shape
@@ -547,14 +501,15 @@ class ProlongationALS:
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
-            self.fine_mps[0] = left_tensor
-            self.fine_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+            self.fine_mps[site] = left_tensor
+            self.fine_mps[site + 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
         else:
-            self.fine_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.fine_mps[1] = right_tensor
+            self.fine_mps[site] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.fine_mps[site + 1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2], leg_sizes[3]))
         self.overlap.append(
-            ncon([new_tensor, np.conj(self.fine_mps[self.L - 1]), np.conj(self.fine_mps[self. L])],
+            ncon([new_tensor, np.conj(self.fine_mps[site]), np.conj(self.fine_mps[site + 1])],
                  [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
         )
 
@@ -573,12 +528,15 @@ class ProlongationALS:
         self._rightmost_update(left2right=False)
         self._right_envs_update(self.L)
 
-        for site in range(self.L - 1, 0, -1):
+        self._second_rightmost_update(left2right=False)
+        self._right_envs_update(self.L - 1)
+
+        for site in range(self.L - 3, 0, -1):
             self._inner_update(site, left2right=False)
-            self._right_envs_update(site)
+            self._right_envs_update(site + 1)
 
     def optimize(self):
-        for _ in self.sweeps:
+        for _ in range(self.sweeps):
             self._left_to_right_sweep()
             self._right_to_left_sweep()
 

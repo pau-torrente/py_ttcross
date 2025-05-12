@@ -15,7 +15,7 @@ def _overflow_checker(tensors: np.ndarray, physical_indices: list[int], site: in
     Returns:
         int: The value of the bond dimension.
     """
-    current_min = min(max_bond_dimension, tensors[site - 1].shape[2] * physical_indices[site])
+    current_min = min(max_bond_dimension, tensors[site - 1].shape[-1] * physical_indices[site])
     prod = 1
     for i in range(site + 1, len(physical_indices)):
         prod *= physical_indices[i]
@@ -45,7 +45,7 @@ def _tensor_shapes(tensors: np.ndarray, physical_indices: list[int], site: int, 
 
     else:
         return (
-            tensors[site - 1].shape[2],
+            tensors[site - 1].shape[-1],
             physical_indices[site],
             _overflow_checker(tensors, physical_indices, site, max_bond_dimension),
         )
