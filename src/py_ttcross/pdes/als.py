@@ -2,7 +2,7 @@ from copy import deepcopy
 import numpy as np
 from scipy import linalg as la
 from ncon import ncon
-from .operators import Prolongation, OneDimHeatEqEvolver, OneDimLaplacian
+from .operators import Prolongation
 from ..tns.mps_operations import OrthoOps
 from ..tns.mps import create_random_mps
 
@@ -32,31 +32,35 @@ class ALS:
         tol: float,
         sweeps: int,
     ):
-        self.func = func
-        self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=True)
+        self.func = deepcopy(func)
 
-        self.opt_mps = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
+        self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=True)
+        self.opt_mps, _ = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
+
         self.mpo = operator
         self.L = len(self.func)
 
         self._check_mpo_mps_compatibility()
 
-        self.bonds = [tensor.shape[2] for tensor in self.fine_mps[:self.L + 1]]
+        self.bonds = [tensor.shape[-1] for tensor in self.func[:self.L - 1]]
         self.max_chi = max_bond_dim
         self.tol = tol
         self.sweeps = sweeps
         self.overlap = []
         self.truncation_error = []
 
+        self._initialize_envs()
+        print("hello")
+
     def _check_mpo_mps_compatibility(self):
         if len(self.func) != len(self.mpo):
             raise ValueError(f"Given function MPS and MPO do not share the same length: len(func) = {len(self.func)} != len(mpo) = {len(self.mpo)}")
         
-        if self.func[0].shape[0] != self.mpo.shape[0]:
-            raise ValueError(f"Func and MPO physical indices do not match at site 0")
+        if self.func[0].shape[0] != self.mpo[0].shape[0]:
+            raise ValueError("Func and MPO physical indices do not match at site 0")
         
         for site in range(1, self.L):
-            if self.func[0].shape[1] != self.mpo.shape[1]:
+            if self.func[site].shape[1] != self.mpo[site].shape[1]:
                 raise ValueError(f"Func and MPO physical indices do not match at site {site}")
             
     def _initialize_envs(self):
@@ -85,7 +89,10 @@ class ALS:
         self.l = np.ndarray(self.L, dtype=object)
         self.r = np.ndarray(self.L, dtype=object)
 
-        for site in range(self.L, 0, -1):
+        self.lfg = np.ndarray(self.L, dtype=object)
+        self.rfg = np.ndarray(self.L, dtype=object)
+
+        for site in range(self.L - 1, 0, -1):
             self._right_envs_update(site)
 
     def _left_envs_update(self, site: int):
@@ -97,7 +104,7 @@ class ALS:
         """
         if site == 0:
             self.l[site] = ncon(
-                [self.func[site], self.mpo, np.conj(self.opt_mps[site])],
+                [self.func[site], self.mpo[site], np.conj(self.opt_mps[site])],
                 [[1, -1], [1, 2, -2], [2, -3]]
             )
 
@@ -113,7 +120,7 @@ class ALS:
 
         else:
             self.l[site] = ncon(
-                [self.l[site - 1], self.func[site], self.mpo, np.conj(self.opt_mps[site])],
+                [self.l[site - 1], self.func[site], self.mpo[site], np.conj(self.opt_mps[site])],
                 [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
             )
 
@@ -141,7 +148,7 @@ class ALS:
         """
         if site == self.L - 1:
             self.r[site] = ncon(
-                [self.func, self.mpo[site], np.conj(self.opt_mps[site])],
+                [self.func[site], self.mpo[site], np.conj(self.opt_mps[site])],
                 [[-1, 1], [-2, 1, 2], [-3, 2]],
             )
 
@@ -169,7 +176,7 @@ class ALS:
     def _leftmost_update(self, left2right:bool = True):
         new_tensor = ncon(
             [self.func[0], self.func[1], self.mpo[0], self.mpo[1], self.r[2]],
-            [[1, 2], [2, 4, 5], [1, -1, 1], [3, 4, -2, 6], [5, 6, -3]]
+            [[1, 2], [2, 4, 5], [1, -1, 3], [3, 4, -2, 6], [5, 6, -3]]
         )
 
         leg_sizes = new_tensor.shape
@@ -181,7 +188,7 @@ class ALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
@@ -191,6 +198,7 @@ class ALS:
             self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
             self.opt_mps[1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
         self.overlap.append(
             ncon([new_tensor, np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1])],
                  [[1, 3, 4], [1, 2], [2, 3, 4]])
@@ -198,7 +206,7 @@ class ALS:
 
     def _rightmost_update(self, left2right:bool = True):
         new_tensor = ncon(
-            [self.r[self.L - 3], self.func[self.L - 2], self.func[self.L - 1], self.mpo[self.L - 1], self.mpo[self.L]],
+            [self.l[self.L - 3], self.func[self.L - 2], self.func[self.L - 1], self.mpo[self.L - 2], self.mpo[self.L - 1]],
             [[1, 2, -1], [1, 3, 4], [4, 6], [2, 3, -2, 5], [5, 6, -3]]
         )
 
@@ -211,25 +219,26 @@ class ALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
 
         if left2right:
-            self.opt_mps[self.L - 1] = left_tensor
-            self.opt_mps[self.L] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
+            self.opt_mps[self.L - 2] = left_tensor
+            self.opt_mps[self.L - 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
         else:
-            self.opt_mps[self.L - 1] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.opt_mps[self.L] = right_tensor
+            self.opt_mps[self.L - 2] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.opt_mps[self.L - 1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
         self.overlap.append(
-            ncon([new_tensor, np.conj(self.opt_mps[self.L - 1]), np.conj(self.opt_mps[self. L])],
+            ncon([new_tensor, np.conj(self.opt_mps[self.L - 2]), np.conj(self.opt_mps[self.L - 1])],
                  [[1, 2, 4], [1, 2, 3], [3, 4]])
         )
 
     def _inner_update(self, site: int, left2right: bool = True):
         new_tensor = ncon(
-            [self.r[site - 1], self.func[site], self.func[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
+            [self.l[site - 1], self.func[site], self.func[site + 1], self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
             [[1, 2, -1], [1, 3, 4], [4, 6, 7], [2, 3, -2, 5], [5, 6, -3, 8], [7, 8, -4]]
         )
         leg_sizes = new_tensor.shape
@@ -241,18 +250,19 @@ class ALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
-            self.opt_mps[0] = left_tensor
-            self.opt_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+            self.opt_mps[site] = left_tensor
+            self.opt_mps[site + 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
         else:
-            self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.opt_mps[1] = right_tensor
+            self.opt_mps[site] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+            self.opt_mps[site + 1] = right_tensor
 
+        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2], leg_sizes[3]))
         self.overlap.append(
-            ncon([new_tensor, np.conj(self.opt_mps[self.L - 1]), np.conj(self.opt_mps[self. L])],
+            ncon([new_tensor, np.conj(self.opt_mps[site]), np.conj(self.opt_mps[site + 1])],
                  [[1, 2, 4, 5], [1, 2, 3], [3, 4, 5]])
         )
 
@@ -266,14 +276,14 @@ class ALS:
 
     def _right_to_left_sweep(self):
         self._rightmost_update(left2right=False)
-        self._right_envs_update(self.L)
+        self._right_envs_update(self.L - 1)
 
-        for site in range(self.L - 1, 0, -1):
+        for site in range(self.L - 3, 0, -1):
             self._inner_update(site, left2right=False)
-            self._right_envs_update(site)
+            self._right_envs_update(site + 1)
 
     def optimize(self):
-        for _ in self.sweeps:
+        for _ in range(self.sweeps):
             self._left_to_right_sweep()
             self._right_to_left_sweep()
 
@@ -406,7 +416,8 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
@@ -436,7 +447,8 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
 
@@ -467,7 +479,8 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
@@ -497,7 +510,9 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
+        s_renorm = np.diag(s[:chitemp])
+
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:

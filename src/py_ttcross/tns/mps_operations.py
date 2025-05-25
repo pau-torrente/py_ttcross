@@ -155,7 +155,7 @@ class OrthoOps:
         dtol: float = 1e-12,
         get_matrices: bool = False,
         normalize: bool = False,
-    ):
+    ) -> np.ndarray:
         """
         Convert the last `site` tensors of the MPS to right-orthogonal form. If the get_matrices flag is set to True,
         the matrices used to make the MPS left-orthogonal at each site are also returned.
