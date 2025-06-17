@@ -14,7 +14,9 @@ class DifferentialMPO:
 
 class OneDimLaplacian(DifferentialMPO):
     # Leg ordering: leftbond-upphys-lowphys-rightbond
-    def __init__(self, L: int):
+    def __init__(self, L: int, rang:float):
+        xstep = rang / (2**(L))
+        self.factor = xstep**(2/L)
         super().__init__(L)
 
     def _build_leftmost_tensor(self):
@@ -28,10 +30,11 @@ class OneDimLaplacian(DifferentialMPO):
         tens = np.zeros((3,2,2,3))
         tens[0, 0, 0, 0] = 1.0
         tens[0, 1, 1, 0] = 1.0
-        tens[1, 1, 0, 1] = 1.0
-        tens[0, 0, 1, 1] = 1.0
-        tens[0, 1, 0, 2] = 1.0
-        tens[2, 0, 1, 2] = 1.0
+        tens[1, 0, 1, 1] = 1.0
+        tens[0, 1, 0, 1] = 1.0
+        tens[0, 0, 1, 2] = 1.0
+        tens[2, 1, 0, 2] = 1.0
+
         # I think there is a typo in the paper. They say the entries must be equal to 4, but other works 
         # say they must be equal to one, and this value gives more reasonable outputs
         # tens[0, 0, 0, 0] = 4.0
@@ -40,7 +43,8 @@ class OneDimLaplacian(DifferentialMPO):
         # tens[0, 0, 1, 1] = 4.0
         # tens[0, 1, 0, 2] = 4.0
         # tens[2, 0, 1, 2] = 4.0
-        return tens
+        # return tens
+        return tens / self.factor
     
     def _build_rightmost_tensor(self):
         right = np.zeros(3)

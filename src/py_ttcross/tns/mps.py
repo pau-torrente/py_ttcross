@@ -77,5 +77,11 @@ def create_random_mps(
             if complex_entries
             else np.random.rand(*_tensor_shapes(tensors, phys_d, i, max_chi))
         )
+    # for i in range(n_sites):
+    #     tensors[i] = (
+    #         np.ones(_tensor_shapes(tensors, phys_d, i, max_chi)) + 1j * np.ones(_tensor_shapes(tensors, phys_d, i, max_chi))
+    #         if complex_entries
+    #         else np.ones(_tensor_shapes(tensors, phys_d, i, max_chi))
+    #     )
     return tensors
 
