@@ -1,6 +1,3 @@
->[!NOTE]
-> I am currently porting the contents of this package to Julia, with a focus on making the code much more organized, "professional" and, especially, FAST :racing_car:. You can check it out in [this repo](https://github.com/pau-torrente/TTCross.jl/tree/main). If you are interested in the  topic and see ways to improve the code, please reach out as this is a project of mine to learn Julia and how GPU's work :pray:
-
 # py_ttcross
 A lightweight python toolkit for interpolation and integration of functions, based on the Tensor Train Cross (TT-Cross) decomposition of large tensors [1]. The package builds the approximation of a black box N-dimensional function using either the TTRC algorithm [2] or the Greedy-Cross algorithm [3]. You can find more information in the references or in my Bachelor's thesis for which I built this toolkit (you can find it in the main folder of this repo as TFG-Pau-Torrente-Badia.pdf)
 
