@@ -1,2 +1,2 @@
-from .als import ALS, ProlongationALS
-from .operators import OneDimHeatEqEvolver, OneDimLaplacian, Prolongation
+from .als import TTGMRES, Prolongation
+from .operators import OneDimHeatEqEvolver, OneDimLaplacian, ProlongationMPO

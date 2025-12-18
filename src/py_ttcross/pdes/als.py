@@ -3,13 +3,13 @@ import numpy as np
 from scipy import linalg as la
 from scipy.sparse.linalg import LinearOperator, gmres
 from ncon import ncon
-from .operators import Prolongation
+from .operators import ProlongationMPO
 from ..tns.mps_operations import OrthoOps
 from ..tns.mps import create_random_mps
 
-class ALS:
+class TTGMRES:
     """
-    DMRG style ALS class. It contains all the machinery to obtain a a compressed function psi that satisfies operator * psi = func
+    DMRG style linear solver class. It contains all the machinery to obtain a a compressed function psi that satisfies operator * psi = func
 
     Args:
         - func (np.ndarray): The QTT representation of the target function.
@@ -31,6 +31,7 @@ class ALS:
         sweeps: int,
         init_mps: np.ndarray = None
     ):
+    
         copied_list = [deepcopy(tens) for tens in func]
 
         # 1. Create an empty array with the correct size and dtype=object
@@ -122,16 +123,6 @@ class ALS:
                 [[1, -1], [1, -2]]
             )
 
-            # self.l[site] = ncon(
-            #     [self.coarse_mps[site], self.mpo],
-            #     [[1, -1], [1, -3, -2]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1], [1, -3]],
-            # )
-
         else:
             self.l[site] = ncon(
                 [self.l[site - 1], self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
@@ -142,21 +133,6 @@ class ALS:
                 [self.lfg[site - 1], self.func[site], np.conj(self.opt_mps[site])],
                 [[1, 2], [1, 3, -1], [2, 3, -2]]
             )
-
-            # self.l[site] = ncon(
-            #     [self.l[site - 1], self.coarse_mps[site]],
-            #     [[1, -3, -4], [1, -2, -1]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], self.mpo[site]],
-            #     [[-1, 1, 2, -4], [2, 1, -3, -2]],
-            # )
-
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1, 2], [2, 1, -3]],
-            # )
 
     def _right_envs_update(self, site: int):
         """Creates/updates the right environment blocks that participate in the energy expectation value from the
@@ -186,21 +162,6 @@ class ALS:
                 [self.func[site], np.conj(self.opt_mps[site]), self.rfg[site + 1]],
                 [[-1, 2, 1], [-2, 2, 3], [1, 3]]
             )
-
-            # self.r[site] = ncon(
-            #     [self.coarse_mps[site], self.r[site + 1]],
-            #     [[-1, -2, 1], [1, -3, -4]],
-            # )
-
-            # self.r[site] = ncon(
-            #     [self.mpo[site], self.r[site]],
-            #     [[-2, 1, -3, 2], [-1, 1, 2, -4]],
-            # )
-
-            # self.r[site] = ncon(
-            #     [np.conj(self.fine_mps[site]), self.r[site]],
-            #     [[-3, 1, 2], [-1, -2, 1, 2]],
-            # )
 
     def _leftmost_linearsys_sol(self):
         shape = (self.opt_mps[0].shape[0], self.opt_mps[1].shape[1], self.opt_mps[1].shape[2])
@@ -252,8 +213,6 @@ class ALS:
             [self.opt_mps[-2], self.opt_mps[-1]],
             [[-1, -2, 1], [1, -3]]
         ).reshape((vec_length, ))
-
-        # initial_guess = np.random.randn(vec_length)
 
         b = ncon(
             [self.lfg[-3], self.func[-2], self.func[-1]], 
@@ -456,443 +415,398 @@ class ALS:
         return self.opt_mps, self.cost, self.truncation_error
     
 
-class ALS2:
-    """
-    DMRG style ALS class. It contains all the machinery to obtain a a compressed function psi that satisfies operator * psi = func
+# class TTGMRES2:
+#     """
+#     2-site DMRG style GMRES class. It contains all the machinery to obtain a a compressed function psi that satisfies operator * psi = func
 
-    Args:
-        - func (np.ndarray): The QTT representation of the target function.
-        - operator (np.ndarray): The MPO representation of the operator.
-        - initial_bond_guess (int): The initial maximum bond dimension guess for the MPS.
-        - max_bond_dim (int): The maximum bond dimension alloed in the two site DMRG style procedure
-        - tol (float): Truncation tolerance in the svd steps.
-        - sweeps (int): The number of sweeps to perform. By sweep it is meant a full left to right and then right to
-            left sequence of updates along the MPS.
-    """
+#     Args:
+#         - func (np.ndarray): The QTT representation of the target function.
+#         - operator (np.ndarray): The MPO representation of the operator.
+#         - initial_bond_guess (int): The initial maximum bond dimension guess for the MPS.
+#         - max_bond_dim (int): The maximum bond dimension alloed in the two site DMRG style procedure
+#         - tol (float): Truncation tolerance in the svd steps.
+#         - sweeps (int): The number of sweeps to perform. By sweep it is meant a full left to right and then right to
+#             left sequence of updates along the MPS.
+#     """
 
-    def __init__(
-        self,
-        func: np.ndarray,
-        operator: np.ndarray,
-        initial_bonds_guess:int,
-        max_bond_dim:int,
-        tol: float,
-        sweeps: int,
-    ):
-        self.func = deepcopy(func)
+#     def __init__(
+#         self,
+#         func: np.ndarray,
+#         operator: np.ndarray,
+#         initial_bonds_guess:int,
+#         max_bond_dim:int,
+#         tol: float,
+#         sweeps: int,
+#     ):
+#         self.func = deepcopy(func)
 
-        self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=False)
-        self.opt_mps, _ = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
+#         self.opt_mps = create_random_mps(len(func), initial_bonds_guess, complex_entries=False)
+#         self.opt_mps, _ = OrthoOps.to_right_orthogonal(self.opt_mps, dummy_ends=False)
 
-        self.mpo = operator
-        self.L = len(self.func)
+#         self.mpo = operator
+#         self.L = len(self.func)
 
-        self._check_mpo_mps_compatibility()
+#         self._check_mpo_mps_compatibility()
 
-        self.bonds = [tensor.shape[-1] for tensor in self.func[:self.L - 1]]
-        self.max_chi = max_bond_dim
-        self.tol = tol
-        self.sweeps = sweeps
-        self.cost = []
-        self.truncation_error = []
+#         self.bonds = [tensor.shape[-1] for tensor in self.func[:self.L - 1]]
+#         self.max_chi = max_bond_dim
+#         self.tol = tol
+#         self.sweeps = sweeps
+#         self.cost = []
+#         self.truncation_error = []
 
-        self._initialize_envs()
+#         self._initialize_envs()
 
-    def _check_mpo_mps_compatibility(self):
-        if len(self.func) != len(self.mpo):
-            raise ValueError(f"Given function MPS and MPO do not share the same length: len(func) = {len(self.func)} != len(mpo) = {len(self.mpo)}")
+#     def _check_mpo_mps_compatibility(self):
+#         if len(self.func) != len(self.mpo):
+#             raise ValueError(f"Given function MPS and MPO do not share the same length: len(func) = {len(self.func)} != len(mpo) = {len(self.mpo)}")
         
-        if self.func[0].shape[0] != self.mpo[0].shape[0]:
-            raise ValueError("Func and MPO physical indices do not match at site 0")
+#         if self.func[0].shape[0] != self.mpo[0].shape[0]:
+#             raise ValueError("Func and MPO physical indices do not match at site 0")
         
-        for site in range(1, self.L):
-            if self.func[site].shape[1] != self.mpo[site].shape[1]:
-                raise ValueError(f"Func and MPO physical indices do not match at site {site}")
+#         for site in range(1, self.L):
+#             if self.func[site].shape[1] != self.mpo[site].shape[1]:
+#                 raise ValueError(f"Func and MPO physical indices do not match at site {site}")
             
-    def _initialize_envs(self):
-        """
-        Initializes the left and right environment blocks for the energy expectation value. Only the right blocks are
-        computed here, as the left blocks are computed on the fly during the first left to right sweep. The convention
-        used for the blocks is the following:
+#     def _initialize_envs(self):
+#         """
+#         Initializes the left and right environment blocks for the energy expectation value. Only the right blocks are
+#         computed here, as the left blocks are computed on the fly during the first left to right sweep. The convention
+#         used for the blocks is the following:
 
-            Left blocks:
+#             Left blocks:
 
-            psi      -->-->-->--...     |——————|-->-->--...    |——————|-->--...
-                    |  |  |  |       =  |L_0   |  |  |      =  |L_1   |          = ...
-            MPO     |  0--0--0--...     |——————|--0--0--...    |——————|--0--...
-                    |  |  |  |          |      |  |  |         |      |
-            psi_0    -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+#             psi      -->-->-->--...     |——————|-->-->--...    |——————|-->--...
+#                     |  |  |  |       =  |L_0   |  |  |      =  |L_1   |          = ...
+#             MPO     |  0--0--0--...     |——————|--0--0--...    |——————|--0--...
+#                     |  |  |  |          |      |  |  |         |      |
+#             psi_0    -->-->-->--...     |——————|-->-->--...    |——————|-->--...
 
-            Right blocks:
+#             Right blocks:
 
-            psi     ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
-                         |  |  |  |  =    |  |  |R_n-1 |  =       |  |R_n-2 |
-            MPO     ...--0--0--0  |     --0--0--|——————|     ...--0--|——————|
-                         |  |  |  |       |  |  |      |          |  |      |
-            psi_0   ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
-        """
+#             psi     ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+#                          |  |  |  |  =    |  |  |R_n-1 |  =       |  |R_n-2 |
+#             MPO     ...--0--0--0  |     --0--0--|——————|     ...--0--|——————|
+#                          |  |  |  |       |  |  |      |          |  |      |
+#             psi_0   ...--<--<--<--      --<--<--|——————|     ...--<--|——————|
+#         """
 
-        self.l = np.ndarray(self.L, dtype=object)
-        self.r = np.ndarray(self.L, dtype=object)
+#         self.l = np.ndarray(self.L, dtype=object)
+#         self.r = np.ndarray(self.L, dtype=object)
 
-        self.lfg = np.ndarray(self.L, dtype=object)
-        self.rfg = np.ndarray(self.L, dtype=object)
+#         self.lfg = np.ndarray(self.L, dtype=object)
+#         self.rfg = np.ndarray(self.L, dtype=object)
 
-        for site in range(self.L - 1, 0, -1):
-            self._right_envs_update(site)
+#         for site in range(self.L - 1, 0, -1):
+#             self._right_envs_update(site)
 
-    def _left_envs_update(self, site: int):
-        """Creates/updates the left environment blocks that participate in the energy expectation value from the current
-        MPS and the MPO.
+#     def _left_envs_update(self, site: int):
+#         """Creates/updates the left environment blocks that participate in the energy expectation value from the current
+#         MPS and the MPO.
 
-        Args:
-            site (int): Site of the MPS where the left environment block is to be created/updated.
-        """
-        if site == 0:
-            self.l[site] = ncon(
-                [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
-                [[1, -1], [1, 2, -2], [2, -3]]
-            )
+#         Args:
+#             site (int): Site of the MPS where the left environment block is to be created/updated.
+#         """
+#         if site == 0:
+#             self.l[site] = ncon(
+#                 [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
+#                 [[1, -1], [1, 2, -2], [2, -3]]
+#             )
             
-            self.lfg[site] = ncon(
-                [self.func[site], np.conj(self.opt_mps[site])],
-                [[1, -1], [1, -2]]
-            )
+#             self.lfg[site] = ncon(
+#                 [self.func[site], np.conj(self.opt_mps[site])],
+#                 [[1, -1], [1, -2]]
+#             )
 
-            # self.l[site] = ncon(
-            #     [self.coarse_mps[site], self.mpo],
-            #     [[1, -1], [1, -3, -2]],
-            # )
 
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1], [1, -3]],
-            # )
+#         else:
+#             self.l[site] = ncon(
+#                 [self.l[site - 1], self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
+#                 [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
+#             )
 
-        else:
-            self.l[site] = ncon(
-                [self.l[site - 1], self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
-                [[1, 3, 5], [1, 2, -1], [3, 2, 4, -2], [5, 4, -3]]
-            )
+#             self.lfg[site] = ncon(
+#                 [self.lfg[site - 1], self.func[site], np.conj(self.opt_mps[site])],
+#                 [[1, 2], [1, 3, -1], [2, 3, -2]]
+#             )
 
-            self.lfg[site] = ncon(
-                [self.lfg[site - 1], self.func[site], np.conj(self.opt_mps[site])],
-                [[1, 2], [1, 3, -1], [2, 3, -2]]
-            )
+#     def _right_envs_update(self, site: int):
+#         """Creates/updates the right environment blocks that participate in the energy expectation value from the
+#         current MPS and the MPO.
 
-            # self.l[site] = ncon(
-            #     [self.l[site - 1], self.coarse_mps[site]],
-            #     [[1, -3, -4], [1, -2, -1]],
-            # )
+#         Args:
+#             site (int): Site of the MPS where the right environment block is to be created/updated.
+#         """
+#         if site == self.L - 1:
+#             self.r[site] = ncon(
+#                 [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
+#                 [[-1, 1], [-2, 1, 2], [-3, 2]],
+#             )
 
-            # self.l[site] = ncon(
-            #     [self.l[site], self.mpo[site]],
-            #     [[-1, 1, 2, -4], [2, 1, -3, -2]],
-            # )
+#             self.rfg[site] = ncon(
+#                 [self.func[site], np.conj(self.opt_mps[site])],
+#                 [[-1, 1], [-2, 1]]
+#             )
 
-            # self.l[site] = ncon(
-            #     [self.l[site], np.conj(self.fine_mps[site])],
-            #     [[-1, -2, 1, 2], [2, 1, -3]],
-            # )
+#         else:
+#             self.r[site] = ncon(
+#                 [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site]), self.r[site + 1]],
+#                 [[-1, 2, 1], [-2, 2, 4, 3], [-3, 4, 5], [1, 3, 5]]
+#             )
 
-    def _right_envs_update(self, site: int):
-        """Creates/updates the right environment blocks that participate in the energy expectation value from the
-        current MPS and the MPO.
+#             self.rfg[site] = ncon(
+#                 [self.func[site], np.conj(self.opt_mps[site]), self.rfg[site + 1]],
+#                 [[-1, 2, 1], [-2, 2, 3], [1, 3]]
+#             )
 
-        Args:
-            site (int): Site of the MPS where the right environment block is to be created/updated.
-        """
-        if site == self.L - 1:
-            self.r[site] = ncon(
-                [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site])],
-                [[-1, 1], [-2, 1, 2], [-3, 2]],
-            )
+#     def _leftmost_linearsys_sol(self):
+#         shape = (self.opt_mps[0].shape[0], self.opt_mps[1].shape[1], self.opt_mps[1].shape[2])
+#         vec_length = np.prod(shape)
 
-            self.rfg[site] = ncon(
-                [self.func[site], np.conj(self.opt_mps[site])],
-                [[-1, 1], [-2, 1]]
-            )
+#         initial_guess = ncon(
+#             [self.opt_mps[0], self.opt_mps[1]],
+#             [[-1, 1], [1, -2, -3]]
+#         ).reshape((vec_length, ))
 
-        else:
-            self.r[site] = ncon(
-                [self.opt_mps[site], self.mpo[site], np.conj(self.opt_mps[site]), self.r[site + 1]],
-                [[-1, 2, 1], [-2, 2, 4, 3], [-3, 4, 5], [1, 3, 5]]
-            )
+#         b = 2 * ncon(
+#             [self.func[0], self.func[1], self.rfg[2]], 
+#             [[-1, 1], [1, -2, 2], [2, -3]]
+#         )
 
-            self.rfg[site] = ncon(
-                [self.func[site], np.conj(self.opt_mps[site]), self.rfg[site + 1]],
-                [[-1, 2, 1], [-2, 2, 3], [1, 3]]
-            )
-
-            # self.r[site] = ncon(
-            #     [self.coarse_mps[site], self.r[site + 1]],
-            #     [[-1, -2, 1], [1, -3, -4]],
-            # )
-
-            # self.r[site] = ncon(
-            #     [self.mpo[site], self.r[site]],
-            #     [[-2, 1, -3, 2], [-1, 1, 2, -4]],
-            # )
-
-            # self.r[site] = ncon(
-            #     [np.conj(self.fine_mps[site]), self.r[site]],
-            #     [[-3, 1, 2], [-1, -2, 1, 2]],
-            # )
-
-    def _leftmost_linearsys_sol(self):
-        shape = (self.opt_mps[0].shape[0], self.opt_mps[1].shape[1], self.opt_mps[1].shape[2])
-        vec_length = np.prod(shape)
-
-        initial_guess = ncon(
-            [self.opt_mps[0], self.opt_mps[1]],
-            [[-1, 1], [1, -2, -3]]
-        ).reshape((vec_length, ))
-
-        # initial_guess = np.random.randn(vec_length)
-
-        b = 2 * ncon(
-            [self.func[0], self.func[1], self.rfg[2]], 
-            [[-1, 1], [1, -2, 2], [2, -3]]
-        )
-
-        if b.shape != shape:
-            raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
+#         if b.shape != shape:
+#             raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
         
-        else:
-            b = b.reshape((vec_length, ))
+#         else:
+#             b = b.reshape((vec_length, ))
 
-        def apply_mpo(vec: np.ndarray):
-            tens = vec.reshape(shape)
+#         def apply_mpo(vec: np.ndarray):
+#             tens = vec.reshape(shape)
 
-            output = ncon(
-                [tens, self.mpo[0], self.mpo[1], self.r[2]],
-                [[1, 2, 3], [1, -1, 4], [4, 2, -2, 5], [3, 5, -3]]
-            )
+#             output = ncon(
+#                 [tens, self.mpo[0], self.mpo[1], self.r[2]],
+#                 [[1, 2, 3], [1, -1, 4], [4, 2, -2, 5], [3, 5, -3]]
+#             )
 
-            return output.reshape((vec_length, ))
+#             return output.reshape((vec_length, ))
         
 
-        lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
+#         lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
 
-        sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
+#         sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
 
-        if exitcode != 0:
-            print("Convergence not achieved in leftmost tensor")
+#         if exitcode != 0:
+#             print("Convergence not achieved in leftmost tensor")
 
-        return sol.reshape(shape)
+#         return sol.reshape(shape)
             
-    def _rightmost_linearsys_sol(self):
-        shape = (self.opt_mps[-2].shape[0], self.opt_mps[-2].shape[1], self.opt_mps[-1].shape[1])
-        vec_length = np.prod(shape)
+#     def _rightmost_linearsys_sol(self):
+#         shape = (self.opt_mps[-2].shape[0], self.opt_mps[-2].shape[1], self.opt_mps[-1].shape[1])
+#         vec_length = np.prod(shape)
 
-        initial_guess = ncon(
-            [self.opt_mps[-2], self.opt_mps[-1]],
-            [[-1, -2, 1], [1, -3]]
-        ).reshape((vec_length, ))
+#         initial_guess = ncon(
+#             [self.opt_mps[-2], self.opt_mps[-1]],
+#             [[-1, -2, 1], [1, -3]]
+#         ).reshape((vec_length, ))
 
-        # initial_guess = np.random.randn(vec_length)
+#         b = 2 * ncon(
+#             [self.lfg[-3], self.func[-2], self.func[-1]], 
+#             [[1, -1], [1, -2, 2], [2, -3]]
+#         )
 
-        b = 2 * ncon(
-            [self.lfg[-3], self.func[-2], self.func[-1]], 
-            [[1, -1], [1, -2, 2], [2, -3]]
-        )
-
-        if b.shape != shape:
-            raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
+#         if b.shape != shape:
+#             raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
         
-        else:
-            b = b.reshape((vec_length, ))
+#         else:
+#             b = b.reshape((vec_length, ))
 
-        def apply_mpo(vec: np.ndarray):
-            tens = vec.reshape(shape)
+#         def apply_mpo(vec: np.ndarray):
+#             tens = vec.reshape(shape)
 
-            output = ncon(
-                [self.l[-3], tens, self.mpo[-2], self.mpo[-1]],
-                [[1, 4, -1], [1, 2, 3], [4, 2, -2, 5], [5, 3, -3]]   
-            )
+#             output = ncon(
+#                 [self.l[-3], tens, self.mpo[-2], self.mpo[-1]],
+#                 [[1, 4, -1], [1, 2, 3], [4, 2, -2, 5], [5, 3, -3]]   
+#             )
 
-            return output.reshape((vec_length, ))
+#             return output.reshape((vec_length, ))
 
-        lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
+#         lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
 
-        sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
+#         sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
 
-        if exitcode != 0:
-            print("Convergence not achieved in rightmost tensor")
+#         if exitcode != 0:
+#             print("Convergence not achieved in rightmost tensor")
 
-        return sol.reshape(shape)
+#         return sol.reshape(shape)
     
-    def _inner_linearsys_sol(self, site):
-        shape = (self.opt_mps[site].shape[0], self.opt_mps[site].shape[1], self.opt_mps[site + 1].shape[1], self.opt_mps[site + 1].shape[2])
-        vec_length = np.prod(shape)
+#     def _inner_linearsys_sol(self, site):
+#         shape = (self.opt_mps[site].shape[0], self.opt_mps[site].shape[1], self.opt_mps[site + 1].shape[1], self.opt_mps[site + 1].shape[2])
+#         vec_length = np.prod(shape)
 
-        # initial_guess = np.random.randn(vec_length)
+#         initial_guess = ncon(
+#             [self.opt_mps[site], self.opt_mps[site + 1]],
+#             [[-1, -2, 1], [1, -3, -4]]
+#         ).reshape((vec_length, ))
 
-        initial_guess = ncon(
-            [self.opt_mps[site], self.opt_mps[site + 1]],
-            [[-1, -2, 1], [1, -3, -4]]
-        ).reshape((vec_length, ))
+#         b = 2 * ncon(
+#             [self.lfg[site - 1], self.func[site], self.func[site + 1], self.rfg[site + 2]], 
+#             [[1, -1], [1, -2, 2], [2, -3, 3], [3, -4]]
+#         )
 
-        b = 2 * ncon(
-            [self.lfg[site - 1], self.func[site], self.func[site + 1], self.rfg[site + 2]], 
-            [[1, -1], [1, -2, 2], [2, -3, 3], [3, -4]]
-        )
-
-        if b.shape != shape:
-            raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
+#         if b.shape != shape:
+#             raise IndexError("Ax and B shapes are not qual in the leftmost linearsys")
         
-        else:
-            b = b.reshape((vec_length, ))
+#         else:
+#             b = b.reshape((vec_length, ))
 
-        def apply_mpo(vec: np.ndarray):
-            tens = vec.reshape(shape)
+#         def apply_mpo(vec: np.ndarray):
+#             tens = vec.reshape(shape)
 
-            output = ncon(
-                [self.l[site - 1], tens, self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
-                [[1, 5, -1], [1, 2, 3, 4], [5, 2, -2, 6], [6, 3, -3, 7], [4, 7, -4]]   
-            )
+#             output = ncon(
+#                 [self.l[site - 1], tens, self.mpo[site], self.mpo[site + 1], self.r[site + 2]],
+#                 [[1, 5, -1], [1, 2, 3, 4], [5, 2, -2, 6], [6, 3, -3, 7], [4, 7, -4]]   
+#             )
 
-            return output.reshape((vec_length, ))
+#             return output.reshape((vec_length, ))
         
 
-        lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
+#         lin_operator = LinearOperator(shape=(vec_length, vec_length), matvec = apply_mpo)
 
-        sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
+#         sol, exitcode = gmres(A = lin_operator, b = b, x0 = initial_guess)
 
-        if exitcode != 0:
-            print(f"Convergence not achieved in tensor at site {site}")
+#         if exitcode != 0:
+#             print(f"Convergence not achieved in tensor at site {site}")
 
-        return sol.reshape(shape)
+#         return sol.reshape(shape)
     
-    def _leftmost_update(self, left2right:bool = True):
-        new_tensor = self._leftmost_linearsys_sol()
+#     def _leftmost_update(self, left2right:bool = True):
+#         new_tensor = self._leftmost_linearsys_sol()
 
-        leg_sizes = new_tensor.shape
+#         leg_sizes = new_tensor.shape
 
-        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1] * leg_sizes[2]))
-        u, s, v = la.svd(new_tensor, full_matrices=False)
+#         new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1] * leg_sizes[2]))
+#         u, s, v = la.svd(new_tensor, full_matrices=False)
 
-        stemp_cumsum = np.cumsum(s)
-        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
-        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
-        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp])
-        self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
+#         stemp_cumsum = np.cumsum(s)
+#         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+#         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], chitemp))
+#         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[1], leg_sizes[2]))
+#         s_renorm = np.diag(s[:chitemp])
+#         self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
 
-        if left2right:
-            self.opt_mps[0] = left_tensor
-            self.opt_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
-        else:
-            self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
-            self.opt_mps[1] = right_tensor
+#         if left2right:
+#             self.opt_mps[0] = left_tensor
+#             self.opt_mps[1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+#         else:
+#             self.opt_mps[0] = ncon([left_tensor, s_renorm], [[-1, 1], [1, -2]])
+#             self.opt_mps[1] = right_tensor
 
-        cost1 = ncon(
-            [self.opt_mps[0], self.opt_mps[1], self.mpo[0], self.mpo[1], np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1]), self.r[2]],
-            [[1, 2], [2, 3, 4], [1, 5, 6], [6, 3, 8, 9], [5, 7], [7, 8, 10], [4, 9, 10]]
-        )
+#         cost1 = ncon(
+#             [self.opt_mps[0], self.opt_mps[1], self.mpo[0], self.mpo[1], np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1]), self.r[2]],
+#             [[1, 2], [2, 3, 4], [1, 5, 6], [6, 3, 8, 9], [5, 7], [7, 8, 10], [4, 9, 10]]
+#         )
 
-        cost2 = ncon(
-            [self.func[0], self.func[1], np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1]), self.rfg[2]],
-            [[1, 2], [2, 4, 5], [1, 3], [3, 4, 6], [5, 6]]
-        )
+#         cost2 = ncon(
+#             [self.func[0], self.func[1], np.conj(self.opt_mps[0]), np.conj(self.opt_mps[1]), self.rfg[2]],
+#             [[1, 2], [2, 4, 5], [1, 3], [3, 4, 6], [5, 6]]
+#         )
 
-        self.cost.append(cost1 - 2 * cost2)
+#         self.cost.append(cost1 - 2 * cost2)
 
-    def _rightmost_update(self, left2right:bool = True):
-        new_tensor = self._rightmost_linearsys_sol()
+#     def _rightmost_update(self, left2right:bool = True):
+#         new_tensor = self._rightmost_linearsys_sol()
 
-        leg_sizes = new_tensor.shape
+#         leg_sizes = new_tensor.shape
 
-        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2]))
-        u, s, v = la.svd(new_tensor, full_matrices=False)
+#         new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2]))
+#         u, s, v = la.svd(new_tensor, full_matrices=False)
 
-        stemp_cumsum = np.cumsum(s)
-        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
-        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
-        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
-        s_renorm = np.diag(s[:chitemp])
-        self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
-
-
-        if left2right:
-            self.opt_mps[self.L - 2] = left_tensor
-            self.opt_mps[self.L - 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
-        else:
-            self.opt_mps[self.L - 2] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.opt_mps[self.L - 1] = right_tensor
-
-        new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
-
-        cost1 = ncon(
-            [self.l[-3], self.opt_mps[-2], self.opt_mps[-1], self.mpo[-2], self.mpo[-1], np.conj(self.opt_mps[-2]), np.conj(self.opt_mps[-1])],
-            [[1, 4, 8], [1, 2, 3], [3, 7], [4, 2, 5, 6], [6, 7, 10], [8, 5, 9], [9, 10]]
-        )
-
-        cost2 = ncon(
-            [self.lfg[-3], self.func[-2], self.func[-1], np.conj(self.opt_mps[-2]), np.conj(self.opt_mps[-1])],
-            [[1, 5], [1, 2, 3], [3, 7], [5, 2, 6], [6, 7]]
-        )
-
-        self.cost.append(cost1 - 2 * cost2)
-
-    def _inner_update(self, site: int, left2right: bool = True):
-        new_tensor = self._inner_linearsys_sol(site)
-        leg_sizes = new_tensor.shape
-
-        new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2] * leg_sizes[3]))
-        u, s, v = la.svd(new_tensor, full_matrices=False)
-
-        stemp_cumsum = np.cumsum(s)
-        chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
-        left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
-        right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        s_renorm = np.diag(s[:chitemp])
-        self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
-
-        if left2right:
-            self.opt_mps[site] = left_tensor
-            self.opt_mps[site + 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
-        else:
-            self.opt_mps[site] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
-            self.opt_mps[site + 1] = right_tensor
+#         stemp_cumsum = np.cumsum(s)
+#         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+#         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+#         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2]))
+#         s_renorm = np.diag(s[:chitemp])
+#         self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
 
 
-        cost1 = ncon(
-            [self.l[site - 1], self.opt_mps[site], self.opt_mps[site + 1], self.mpo[site], self.mpo[site + 1], np.conj(self.opt_mps[site]), np.conj(self.opt_mps[site +1]), self.r[site + 2]],
-            [[1, 6, 9], [1, 2, 3], [3, 4, 5], [6, 2, 10, 7], [7, 4, 12, 8], [9, 10, 11], [11, 12, 13], [5, 8, 13]]
-        )
+#         if left2right:
+#             self.opt_mps[self.L - 2] = left_tensor
+#             self.opt_mps[self.L - 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2]])
+#         else:
+#             self.opt_mps[self.L - 2] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+#             self.opt_mps[self.L - 1] = right_tensor
 
-        cost2 = ncon(
-            [self.lfg[site - 1], self.func[site], self.func[site + 1], np.conj(self.opt_mps[site ]), np.conj(self.opt_mps[site + 1]), self.rfg[site + 2]],
-            [[1, 6], [1, 2, 3], [3, 4, 5], [6, 2, 7], [7, 4, 8], [5, 8]]
-        )
+#         new_tensor = np.reshape(new_tensor, (leg_sizes[0], leg_sizes[1], leg_sizes[2]))
 
-        self.cost.append(cost1 - 2 * cost2)
+#         cost1 = ncon(
+#             [self.l[-3], self.opt_mps[-2], self.opt_mps[-1], self.mpo[-2], self.mpo[-1], np.conj(self.opt_mps[-2]), np.conj(self.opt_mps[-1])],
+#             [[1, 4, 8], [1, 2, 3], [3, 7], [4, 2, 5, 6], [6, 7, 10], [8, 5, 9], [9, 10]]
+#         )
 
-    def _left_to_right_sweep(self):
-        self._leftmost_update(left2right=True)
-        self._left_envs_update(0)
+#         cost2 = ncon(
+#             [self.lfg[-3], self.func[-2], self.func[-1], np.conj(self.opt_mps[-2]), np.conj(self.opt_mps[-1])],
+#             [[1, 5], [1, 2, 3], [3, 7], [5, 2, 6], [6, 7]]
+#         )
 
-        for site in range(1, self.L - 2):
-            self._inner_update(site, left2right=True)
-            self._left_envs_update(site)
+#         self.cost.append(cost1 - 2 * cost2)
 
-    def _right_to_left_sweep(self):
-        self._rightmost_update(left2right=False)
-        self._right_envs_update(self.L - 1)
+#     def _inner_update(self, site: int, left2right: bool = True):
+#         new_tensor = self._inner_linearsys_sol(site)
+#         leg_sizes = new_tensor.shape
 
-        for site in range(self.L - 3, 0, -1):
-            self._inner_update(site, left2right=False)
-            self._right_envs_update(site + 1)
+#         new_tensor = np.reshape(new_tensor, (leg_sizes[0] * leg_sizes[1], leg_sizes[2] * leg_sizes[3]))
+#         u, s, v = la.svd(new_tensor, full_matrices=False)
 
-    def optimize(self):
-        for _ in range(self.sweeps):
-            self._left_to_right_sweep()
-            self._right_to_left_sweep()
+#         stemp_cumsum = np.cumsum(s)
+#         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
+#         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
+#         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
+#         s_renorm = np.diag(s[:chitemp])
+#         self.truncation_error.append(np.sum(s[chitemp:]) / np.sum(s))
 
-        return self.opt_mps, self.cost, self.truncation_error
+#         if left2right:
+#             self.opt_mps[site] = left_tensor
+#             self.opt_mps[site + 1] = ncon([s_renorm, right_tensor], [[-1, 1], [1, -2, -3]])
+#         else:
+#             self.opt_mps[site] = ncon([left_tensor, s_renorm], [[-1, -2, 1], [1, -3]])
+#             self.opt_mps[site + 1] = right_tensor
+
+
+#         cost1 = ncon(
+#             [self.l[site - 1], self.opt_mps[site], self.opt_mps[site + 1], self.mpo[site], self.mpo[site + 1], np.conj(self.opt_mps[site]), np.conj(self.opt_mps[site +1]), self.r[site + 2]],
+#             [[1, 6, 9], [1, 2, 3], [3, 4, 5], [6, 2, 10, 7], [7, 4, 12, 8], [9, 10, 11], [11, 12, 13], [5, 8, 13]]
+#         )
+
+#         cost2 = ncon(
+#             [self.lfg[site - 1], self.func[site], self.func[site + 1], np.conj(self.opt_mps[site ]), np.conj(self.opt_mps[site + 1]), self.rfg[site + 2]],
+#             [[1, 6], [1, 2, 3], [3, 4, 5], [6, 2, 7], [7, 4, 8], [5, 8]]
+#         )
+
+#         self.cost.append(cost1 - 2 * cost2)
+
+#     def _left_to_right_sweep(self):
+#         self._leftmost_update(left2right=True)
+#         self._left_envs_update(0)
+
+#         for site in range(1, self.L - 2):
+#             self._inner_update(site, left2right=True)
+#             self._left_envs_update(site)
+
+#     def _right_to_left_sweep(self):
+#         self._rightmost_update(left2right=False)
+#         self._right_envs_update(self.L - 1)
+
+#         for site in range(self.L - 3, 0, -1):
+#             self._inner_update(site, left2right=False)
+#             self._right_envs_update(site + 1)
+
+#     def optimize(self):
+#         for _ in range(self.sweeps):
+#             self._left_to_right_sweep()
+#             self._right_to_left_sweep()
+
+#         return self.opt_mps, self.cost, self.truncation_error
     
-class ProlongationALS:
+class Prolongation:
     """
     DMRG style ALS-based prolongation class. It contains all the machinery to refine a coarse QTT representation of a function
 
@@ -919,7 +833,7 @@ class ProlongationALS:
         self.fine_mps = create_random_mps(len(coarse_func) + 1, initial_bonds_guess, complex_entries=True)
 
         self.fine_mps, _ = OrthoOps.to_right_orthogonal(self.fine_mps, dummy_ends=False)
-        self.mpo = Prolongation(len(self.coarse_mps)).build_operator()
+        self.mpo = ProlongationMPO(len(self.coarse_mps)).build_operator()
 
 
         self.L = len(self.coarse_mps)
@@ -1082,8 +996,7 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
-        s_renorm = np.diag(s[:chitemp])
+        s_renorm = np.diag(s[:chitemp]) 
         self.truncation_error.append(np.sum(s[chitemp:]))
 
         if left2right:
@@ -1113,7 +1026,6 @@ class ProlongationALS:
         chitemp = int(min(np.argmax(stemp_cumsum >= (1 - self.tol) * stemp_cumsum[-1]) + 1, self.max_chi))
         left_tensor = np.reshape(u[:, :chitemp], (leg_sizes[0], leg_sizes[1], chitemp))
         right_tensor = np.reshape(v[:chitemp, :], (chitemp, leg_sizes[2], leg_sizes[3]))
-        # s_renorm = np.diag(s[:chitemp] / la.norm(s[:chitemp]))
         s_renorm = np.diag(s[:chitemp])
 
         self.truncation_error.append(np.sum(s[chitemp:]))

@@ -35,15 +35,6 @@ class OneDimLaplacian(DifferentialMPO):
         tens[0, 0, 1, 2] = 1.0
         tens[2, 1, 0, 2] = 1.0
 
-        # I think there is a typo in the paper. They say the entries must be equal to 4, but other works 
-        # say they must be equal to one, and this value gives more reasonable outputs
-        # tens[0, 0, 0, 0] = 4.0
-        # tens[0, 1, 1, 0] = 4.0
-        # tens[1, 1, 0, 1] = 4.0
-        # tens[0, 0, 1, 1] = 4.0
-        # tens[0, 1, 0, 2] = 4.0
-        # tens[2, 0, 1, 2] = 4.0
-        # return tens
         return tens / self.factor
     
     def _build_rightmost_tensor(self):
@@ -117,7 +108,7 @@ class OneDimHeatEqEvolver(DifferentialMPO):
         return self.heat_eq_evolver
     
 
-class Prolongation:
+class ProlongationMPO:
     # Leg ordering: leftbond-upphys-lowphys-rightbond
     def __init__(self, L:int):
         self.L = L
